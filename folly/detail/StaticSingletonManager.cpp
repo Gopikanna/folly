@@ -13,15 +13,60 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/detail/StaticSingletonManager.h>
+
+#include <mutex>
+#include <typeindex>
+#include <unordered_map>
 
 namespace folly {
 namespace detail {
 
-// This implementation should always live in .cpp file.
-StaticSingletonManager& StaticSingletonManager::instance() {
-  static StaticSingletonManager* instance = new StaticSingletonManager();
-  return *instance;
+namespace {
+
+class StaticSingletonManagerImpl {
+ public:
+  using Make = void*();
+  using Cache = std::atomic<void*>;
+
+  void* create(std::type_info const& key, Make& make, Cache& cache) {
+    auto const ptr = entry(key).get(make);
+    cache.store(ptr, std::memory_order_release);
+    return ptr;
+  }
+
+ private:
+  struct Entry {
+    void* ptr{};
+    std::mutex mutex;
+
+    void* get(Make& make) {
+      std::lock_guard<std::mutex> lock(mutex);
+      return ptr ? ptr : (ptr = make());
+    }
+  };
+
+  Entry& entry(std::type_info const& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& e = map_[key];
+    return e ? *e : *(e = new Entry());
+  }
+
+  std::unordered_map<std::type_index, Entry*> map_;
+  std::mutex mutex_;
+};
+
+} // namespace
+
+void* StaticSingletonManager::create_(
+    Key const& key,
+    Make& make,
+    Cache& cache) {
+  // This Leaky Meyers Singleton must always live in the .cpp file.
+  static auto& instance = *new StaticSingletonManagerImpl();
+  return instance.create(key, make, cache);
 }
+
 } // namespace detail
 } // namespace folly

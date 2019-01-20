@@ -24,7 +24,9 @@
 
 #if FOLLY_HAVE_LIBZSTD
 
+#ifndef ZSTD_STATIC_LINKING_ONLY
 #define ZSTD_STATIC_LINKING_ONLY
+#endif
 #include <zstd.h>
 
 namespace folly {
@@ -64,6 +66,11 @@ class Options {
     return params_.get();
   }
 
+  /// Get the compression level.
+  int level() const {
+    return level_;
+  }
+
   /// Get the maximum window size.
   size_t maxWindowSize() const {
     return maxWindowSize_;
@@ -76,6 +83,7 @@ class Options {
       folly::static_function_deleter<ZSTD_CCtx_params, &freeCCtxParams>>
       params_;
   size_t maxWindowSize_{0};
+  int level_;
 };
 
 /// Get a zstd Codec with the given options.

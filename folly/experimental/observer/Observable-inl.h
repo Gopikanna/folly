@@ -18,15 +18,20 @@
 namespace folly {
 namespace observer {
 
+namespace detail {
+
 template <typename Observable, typename Traits>
-class ObserverCreator<Observable, Traits>::Context {
+class ObserverCreatorContext {
+  using T = typename Traits::element_type;
+
  public:
   template <typename... Args>
-  Context(Args&&... args) : observable_(std::forward<Args>(args)...) {
+  ObserverCreatorContext(Args&&... args)
+      : observable_(std::forward<Args>(args)...) {
     updateValue();
   }
 
-  ~Context() {
+  ~ObserverCreatorContext() {
     if (value_.copy()) {
       Traits::unsubscribe(observable_);
     }
@@ -86,6 +91,8 @@ class ObserverCreator<Observable, Traits>::Context {
   std::mutex updateMutex_;
 };
 
+} // namespace detail
+
 template <typename Observable, typename Traits>
 template <typename... Args>
 ObserverCreator<Observable, Traits>::ObserverCreator(Args&&... args)
@@ -93,7 +100,7 @@ ObserverCreator<Observable, Traits>::ObserverCreator(Args&&... args)
 
 template <typename Observable, typename Traits>
 Observer<typename ObserverCreator<Observable, Traits>::T>
-ObserverCreator<Observable, Traits>::getObserver()&& {
+ObserverCreator<Observable, Traits>::getObserver() && {
   // This master shared_ptr allows grabbing derived weak_ptrs, pointing to the
   // the same Context object, but using a separate reference count. Master
   // shared_ptr destructor then blocks until all shared_ptrs obtained from
@@ -139,9 +146,8 @@ ObserverCreator<Observable, Traits>::getObserver()&& {
   // callback gets derived weak_ptr.
   ContextMasterPointer contextMaster(context_);
   auto contextWeak = contextMaster.get_weak();
-  auto observer = makeObserver([context = std::move(contextMaster)]() {
-    return context->get();
-  });
+  auto observer = makeObserver(
+      [context = std::move(contextMaster)]() { return context->get(); });
 
   context_->setCore(observer.core_);
   context_->subscribe([contextWeak = std::move(contextWeak)] {

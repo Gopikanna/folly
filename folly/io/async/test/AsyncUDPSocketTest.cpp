@@ -18,6 +18,7 @@
 
 #include <folly/Conv.h>
 #include <folly/SocketAddress.h>
+#include <folly/String.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/AsyncUDPServerSocket.h>
@@ -25,10 +26,12 @@
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
+#include <folly/portability/Sockets.h>
 
 using folly::AsyncTimeout;
 using folly::AsyncUDPServerSocket;
 using folly::AsyncUDPSocket;
+using folly::errnoStr;
 using folly::EventBase;
 using folly::IOBuf;
 using folly::SocketAddress;
@@ -136,6 +139,14 @@ class UDPServer {
     for (auto& t : threads_) {
       t.join();
     }
+  }
+
+  void pauseAccepting() {
+    socket_->pauseAccepting();
+  }
+
+  void resumeAccepting() {
+    socket_->resumeAccepting();
   }
 
   // Whether writes from the UDP server should change the port for each message.
@@ -283,7 +294,8 @@ class ConnectedWriteUDPClient : public UDPClient {
   // msg. This will test that connect worked.
   void writePing(std::unique_ptr<folly::IOBuf> buf) override {
     iovec vec[16];
-    size_t iovec_len = buf->fillIov(vec, sizeof(vec) / sizeof(vec[0]));
+    size_t iovec_len =
+        buf->fillIov(vec, sizeof(vec) / sizeof(vec[0])).numIovecs;
     if (UNLIKELY(iovec_len == 0)) {
       buf->coalesce();
       vec[0].iov_base = const_cast<uint8_t*>(buf->data());
@@ -338,7 +350,7 @@ class AsyncSocketIntegrationTest : public Test {
       sevb.terminateLoopSoon();
     });
 
-    // Wait for server thread to joib
+    // Wait for server thread to join
     serverThread->join();
   }
 
@@ -429,11 +441,27 @@ TEST_F(AsyncSocketIntegrationTest, PingPongUseConnectedSendMsgServerWrongAddr) {
   ASSERT_EQ(pingClient->pongRecvd(), 0);
 }
 
+TEST_F(AsyncSocketIntegrationTest, PingPongPauseResumeListening) {
+  startServer();
+
+  // Exchange should not happen when paused.
+  server->pauseAccepting();
+  auto pausedClient = performPingPongTest(folly::none, false);
+  ASSERT_EQ(pausedClient->pongRecvd(), 0);
+
+  // Exchange does occur after resuming.
+  server->resumeAccepting();
+  auto pingClient = performPingPongTest(folly::none, false);
+  ASSERT_GT(pingClient->pongRecvd(), 0);
+}
+
 class TestAsyncUDPSocket : public AsyncUDPSocket {
  public:
   explicit TestAsyncUDPSocket(EventBase* evb) : AsyncUDPSocket(evb) {}
 
-  MOCK_METHOD3(sendmsg, ssize_t(int, const struct msghdr*, int));
+  MOCK_METHOD3(
+      sendmsg,
+      ssize_t(folly::NetworkSocket, const struct msghdr*, int));
 };
 
 class MockErrMessageCallback : public AsyncUDPSocket::ErrMessageCallback {
@@ -506,6 +534,7 @@ TEST_F(AsyncUDPSocketTest, TestErrToNonExistentServer) {
   socket_->setErrMessageCallback(&err);
   folly::SocketAddress addr("127.0.0.1", 10000);
   bool errRecvd = false;
+#ifdef FOLLY_HAVE_MSG_ERRQUEUE
   EXPECT_CALL(err, errMessage_(_))
       .WillOnce(Invoke([this, &errRecvd](auto& cmsg) {
         if ((cmsg.cmsg_level == SOL_IP && cmsg.cmsg_type == IP_RECVERR) ||
@@ -515,10 +544,11 @@ TEST_F(AsyncUDPSocketTest, TestErrToNonExistentServer) {
                   CMSG_DATA(&cmsg));
           errRecvd =
               (serr->ee_origin == SO_EE_ORIGIN_ICMP || SO_EE_ORIGIN_ICMP6);
-          LOG(ERROR) << "errno " << strerror(serr->ee_errno);
+          LOG(ERROR) << "errno " << errnoStr(serr->ee_errno);
         }
         evb_.terminateLoopSoon();
       }));
+#endif // FOLLY_HAVE_MSG_ERRQUEUE
   socket_->write(addr, folly::IOBuf::copyBuffer("hey"));
   evb_.loopForever();
   EXPECT_TRUE(errRecvd);

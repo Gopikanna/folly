@@ -40,17 +40,6 @@ namespace folly {
 template <class T>
 class SharedPromise {
  public:
-  SharedPromise() = default;
-  ~SharedPromise() = default;
-
-  // not copyable
-  SharedPromise(SharedPromise const&) = delete;
-  SharedPromise& operator=(SharedPromise const&) = delete;
-
-  // movable
-  SharedPromise(SharedPromise<T>&&) noexcept;
-  SharedPromise& operator=(SharedPromise<T>&&) noexcept;
-
   /**
    * Return a Future tied to the shared core state. Unlike Promise::getFuture,
    * this can be called an unlimited number of times per SharedPromise.
@@ -82,15 +71,14 @@ class SharedPromise {
 
   /// Set an interrupt handler to handle interrupts. See the documentation for
   /// Future::raise(). Your handler can do whatever it wants, but if you
-  /// bother to set one then you probably will want to fulfill the SharedPromise with
-  /// an exception (or special value) indicating how the interrupt was
+  /// bother to set one then you probably will want to fulfill the SharedPromise
+  /// with an exception (or special value) indicating how the interrupt was
   /// handled.
   void setInterruptHandler(std::function<void(exception_wrapper const&)>);
 
   /// Sugar to fulfill this SharedPromise<Unit>
   template <class B = T>
-  typename std::enable_if<std::is_same<Unit, B>::value, void>::type
-  setValue() {
+  typename std::enable_if<std::is_same<Unit, B>::value, void>::type setValue() {
     setTry(Try<T>(T()));
   }
 
@@ -112,10 +100,38 @@ class SharedPromise {
   bool isFulfilled();
 
  private:
-  std::mutex mutex_;
-  size_t size_{0};
-  bool hasValue_{false};
-  Try<T> try_;
+  // this allows SharedPromise move-ctor/move-assign to be defaulted
+  struct Mutex : std::mutex {
+    Mutex() = default;
+    Mutex(Mutex&&) noexcept {}
+    Mutex& operator=(Mutex&&) noexcept {
+      return *this;
+    }
+  };
+
+  template <typename V>
+  struct Defaulted {
+    using Noexcept = StrictConjunction<
+        std::is_nothrow_default_constructible<V>,
+        std::is_nothrow_move_constructible<V>,
+        std::is_nothrow_move_assignable<V>>;
+    V value{V()};
+    Defaulted() = default;
+    Defaulted(Defaulted&& that) noexcept(Noexcept::value)
+        : value(std::exchange(that.value, V())) {}
+    Defaulted& operator=(Defaulted&& that) noexcept(Noexcept::value) {
+      value = std::exchange(that.value, V());
+      return *this;
+    }
+  };
+
+  bool hasResult() {
+    return try_.value.hasValue() || try_.value.hasException();
+  }
+
+  Mutex mutex_;
+  Defaulted<size_t> size_;
+  Defaulted<Try<T>> try_;
   std::vector<Promise<T>> promises_;
   std::function<void(exception_wrapper const&)> interruptHandler_;
 };

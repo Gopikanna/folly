@@ -15,7 +15,7 @@
  */
 
 #ifndef FOLLY_GEN_PARALLEL_H_
-#error This file may only be included from folly/gen/ParallelGen.h
+#error This file may only be included from folly/gen/Parallel.h
 #endif
 
 #include <folly/MPMCQueue.h>
@@ -45,8 +45,12 @@ class ClosableMPMCQueue {
     CHECK(!consumers());
   }
 
-  void openProducer() { ++producers_; }
-  void openConsumer() { ++consumers_; }
+  void openProducer() {
+    ++producers_;
+  }
+  void openConsumer() {
+    ++consumers_;
+  }
 
   void closeInputProducer() {
     size_t producers = producers_--;
@@ -159,18 +163,21 @@ class Parallel : public Operator<Parallel<Ops>> {
           decltype(std::declval<Ops>().compose(Empty<InputDecayed&&>())),
       class Output = typename Composed::ValueType,
       class OutputDecayed = typename std::decay<Output>::type>
-  class Generator : public GenImpl<OutputDecayed&&,
-                                   Generator<Input,
-                                             Source,
-                                             InputDecayed,
-                                             Composed,
-                                             Output,
-                                             OutputDecayed>> {
-    const Source source_;
-    const Ops ops_;
-    const size_t threads_;
-    typedef ClosableMPMCQueue<InputDecayed> InQueue;
-    typedef ClosableMPMCQueue<OutputDecayed> OutQueue;
+  class Generator : public GenImpl<
+                        OutputDecayed&&,
+                        Generator<
+                            Input,
+                            Source,
+                            InputDecayed,
+                            Composed,
+                            Output,
+                            OutputDecayed>> {
+    Source source_;
+    Ops ops_;
+    size_t threads_;
+
+    using InQueue = ClosableMPMCQueue<InputDecayed>;
+    using OutQueue = ClosableMPMCQueue<OutputDecayed>;
 
     class Puller : public GenImpl<InputDecayed&&, Puller> {
       InQueue* queue_;
@@ -269,9 +276,13 @@ class Parallel : public Operator<Parallel<Ops>> {
         CHECK(!outQueue_.producers());
       }
 
-      void closeInputProducer() { inQueue_.closeInputProducer(); }
+      void closeInputProducer() {
+        inQueue_.closeInputProducer();
+      }
 
-      void closeOutputConsumer() { outQueue_.closeOutputConsumer(); }
+      void closeOutputConsumer() {
+        outQueue_.closeOutputConsumer();
+      }
 
       bool writeUnlessClosed(Input&& input) {
         return inQueue_.writeUnlessClosed(std::forward<Input>(input));

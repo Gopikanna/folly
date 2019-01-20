@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# Copyright (c) Facebook, Inc. and its affiliates.
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -8,6 +9,7 @@ import specs.fbthrift as fbthrift
 import specs.folly as folly
 import specs.gmock as gmock
 import specs.sodium as sodium
+import specs.sigar as sigar
 
 from shell_quoting import ShellQuoted
 
@@ -15,7 +17,7 @@ from shell_quoting import ShellQuoted
 def fbcode_builder_spec(builder):
     builder.add_option('zeromq/libzmq:git_hash', 'v4.2.5')
     return {
-        'depends_on': [folly, fbthrift, gmock, sodium],
+        'depends_on': [folly, fbthrift, gmock, sodium, sigar],
         'steps': [
             builder.github_project_workdir('zeromq/libzmq', '.'),
             builder.step('Build and install zeromq/libzmq', [

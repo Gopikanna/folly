@@ -70,13 +70,13 @@ using FixedStringBase = FixedStringBase_<>;
 }
 
 constexpr std::size_t checkOverflow(std::size_t i, std::size_t max) {
-  return i <= max ? i : (assertOutOfBounds(), max);
+  return i <= max ? i : (void(assertOutOfBounds()), max);
 }
 
 constexpr std::size_t checkOverflowOrNpos(std::size_t i, std::size_t max) {
   return i == FixedStringBase::npos
       ? max
-      : (i <= max ? i : (assertOutOfBounds(), max));
+      : (i <= max ? i : (void(assertOutOfBounds()), max));
 }
 
 // Intentionally NOT constexpr. See note above for assertOutOfBounds
@@ -177,8 +177,9 @@ constexpr bool find_at_(
     const Right& right,
     std::size_t pos,
     std::size_t count) noexcept {
-  return 0u == count || (left[pos + count - 1u] == right[count - 1u] &&
-                         find_at_(left, right, pos, count - 1u));
+  return 0u == count ||
+      (left[pos + count - 1u] == right[count - 1u] &&
+       find_at_(left, right, pos, count - 1u));
 }
 
 template <class Char, class Right>
@@ -357,7 +358,7 @@ struct ReverseIterator {
     --p_;
     return *this;
   }
-  FOLLY_CPP14_CONSTEXPR ReverseIterator operator++(int)noexcept {
+  FOLLY_CPP14_CONSTEXPR ReverseIterator operator++(int) noexcept {
     auto tmp(*this);
     --p_;
     return tmp;
@@ -366,7 +367,7 @@ struct ReverseIterator {
     ++p_;
     return *this;
   }
-  FOLLY_CPP14_CONSTEXPR ReverseIterator operator--(int)noexcept {
+  FOLLY_CPP14_CONSTEXPR ReverseIterator operator--(int) noexcept {
     auto tmp(*this);
     ++p_;
     return tmp;
@@ -1457,11 +1458,12 @@ class BasicFixedString : private detail::fixedstring::FixedStringBase {
       std::size_t pos,
       std::size_t count = npos) noexcept(false) {
     using A = const Char[1];
+    constexpr A a{Char(0)};
     return replace(
         pos,
         detail::fixedstring::checkOverflowOrNpos(
             count, size_ - detail::fixedstring::checkOverflow(pos, size_)),
-        A{Char(0)},
+        a,
         0u);
   }
 
@@ -2007,10 +2009,10 @@ class BasicFixedString : private detail::fixedstring::FixedStringBase {
     return creplace(first - data_, last - first, that, that_pos, that_count);
   }
 
-  /** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** ** **
-  * Copies `min(count, size())` characters starting from offset `0`
-  *   from this string into the buffer pointed to by `dest`.
-  * \return The number of characters copied.
+  /**
+   * Copies `min(count, size())` characters starting from offset `0`
+   *   from this string into the buffer pointed to by `dest`.
+   * \return The number of characters copied.
    */
   FOLLY_CPP14_CONSTEXPR std::size_t copy(Char* dest, std::size_t count) const
       noexcept {
@@ -3010,7 +3012,7 @@ inline namespace {
 constexpr const std::size_t& npos = detail::fixedstring::FixedStringBase::npos;
 } // namespace
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(__ICC)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpragmas"
 #pragma GCC diagnostic ignored "-Wgnu-string-literal-operator-template"
@@ -3037,9 +3039,14 @@ constexpr const std::size_t& npos = detail::fixedstring::FixedStringBase::npos;
  */
 template <class Char, Char... Cs>
 constexpr BasicFixedString<Char, sizeof...(Cs)> operator"" _fs() noexcept {
+#if __cplusplus >= 201402L
+  const Char a[] = {Cs..., Char(0)};
+  return {+a, sizeof...(Cs)};
+#else
   using A = const Char[sizeof...(Cs) + 1u];
   // The `+` in `+A{etc}` forces the array type to decay to a pointer
   return {+A{Cs..., Char(0)}, sizeof...(Cs)};
+#endif
 }
 
 #pragma GCC diagnostic pop

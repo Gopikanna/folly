@@ -23,9 +23,9 @@
 #include <boost/intrusive/list.hpp>
 #include <glog/logging.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
-#include <list>
 #include <memory>
 
 namespace folly {
@@ -106,20 +106,11 @@ class HHWheelTimer : private folly::AsyncTimeout,
 
     /**
      * Get the time remaining until this timeout expires. Return 0 if this
-     * timeout is not scheduled or expired. Otherwise, return expiration time
-     * minus getCurTime().
+     * timeout is not scheduled or expired. Otherwise, return expiration
+     * time minus current time.
      */
     std::chrono::milliseconds getTimeRemaining() {
-      return getTimeRemaining(getCurTime());
-    }
-
-   protected:
-    /**
-     * Don't override this unless you're doing a test. This is mainly here so
-     * that we can override it to simulate lag in steady_clock.
-     */
-    virtual std::chrono::steady_clock::time_point getCurTime() {
-      return std::chrono::steady_clock::now();
+      return getTimeRemaining(std::chrono::steady_clock::now());
     }
 
    private:
@@ -133,19 +124,20 @@ class HHWheelTimer : private folly::AsyncTimeout,
           expiration_ - now);
     }
 
-    void setScheduled(HHWheelTimer* wheel,
-                      std::chrono::milliseconds);
+    void setScheduled(
+        HHWheelTimer* wheel,
+        std::chrono::steady_clock::time_point deadline);
     void cancelTimeoutImpl();
 
     HHWheelTimer* wheel_{nullptr};
     std::chrono::steady_clock::time_point expiration_{};
     int bucket_{-1};
 
-    typedef boost::intrusive::list<
-      Callback,
-      boost::intrusive::constant_time_size<false> > List;
+    typedef boost::intrusive::
+        list<Callback, boost::intrusive::constant_time_size<false>>
+            List;
 
-    std::shared_ptr<RequestContext> context_;
+    std::shared_ptr<RequestContext> requestContext_;
 
     // Give HHWheelTimer direct access to our members so it can take care
     // of scheduling/cancelling.
@@ -209,10 +201,7 @@ class HHWheelTimer : private folly::AsyncTimeout,
    * If the callback is already scheduled, this cancels the existing timeout
    * before scheduling the new timeout.
    */
-  void scheduleTimeout(Callback* callback,
-                       std::chrono::milliseconds timeout);
-  void scheduleTimeoutImpl(Callback* callback,
-                       std::chrono::milliseconds timeout);
+  void scheduleTimeout(Callback* callback, std::chrono::milliseconds timeout);
 
   /**
    * Schedule the specified Callback to be invoked after the
@@ -235,7 +224,7 @@ class HHWheelTimer : private folly::AsyncTimeout,
           fn_();
         } catch (std::exception const& e) {
           LOG(ERROR) << "HHWheelTimer timeout callback threw an exception: "
-            << e.what();
+                     << e.what();
         } catch (...) {
           LOG(ERROR) << "HHWheelTimer timeout callback threw a non-exception.";
         }
@@ -250,7 +239,7 @@ class HHWheelTimer : private folly::AsyncTimeout,
   /**
    * Return the number of currently pending timeouts
    */
-  uint64_t count() const {
+  std::size_t count() const {
     return count_;
   }
 
@@ -273,8 +262,8 @@ class HHWheelTimer : private folly::AsyncTimeout,
 
  private:
   // Forbidden copy constructor and assignment operator
-  HHWheelTimer(HHWheelTimer const &) = delete;
-  HHWheelTimer& operator=(HHWheelTimer const &) = delete;
+  HHWheelTimer(HHWheelTimer const&) = delete;
+  HHWheelTimer& operator=(HHWheelTimer const&) = delete;
 
   // Methods inherited from AsyncTimeout
   void timeoutExpired() noexcept override;
@@ -290,24 +279,45 @@ class HHWheelTimer : private folly::AsyncTimeout,
 
   typedef Callback::List CallbackList;
   CallbackList buckets_[WHEEL_BUCKETS][WHEEL_SIZE];
-  std::vector<uint64_t> bitmap_;
+  std::array<std::size_t, (WHEEL_SIZE / sizeof(std::size_t)) / 8> bitmap_;
 
   int64_t timeToWheelTicks(std::chrono::milliseconds t) {
     return t.count() / interval_.count();
   }
 
   bool cascadeTimers(int bucket, int tick);
-  int64_t lastTick_;
   int64_t expireTick_;
-  uint64_t count_;
+  std::size_t count_;
   std::chrono::steady_clock::time_point startTime_;
 
   int64_t calcNextTick();
+  int64_t calcNextTick(std::chrono::steady_clock::time_point curTime);
 
-  void scheduleNextTimeout();
+  /**
+   * Schedule a given timeout by putting it into the appropriate bucket of the
+   * wheel.
+   *
+   * @param callback           Callback to fire after `timeout`
+   * @param timeout            Interval after which the `callback` should be
+   *                           fired.
+   * @param nextTickToProcess  next tick that was not processed by the timer
+   *                           yet. Can be less than nextTick if we're lagging.
+   * @nextTick                 next tick based on the actual time
+   */
+  void scheduleTimeoutImpl(
+      Callback* callback,
+      std::chrono::milliseconds timeout,
+      int64_t nextTickToProcess,
+      int64_t nextTick);
+  void scheduleNextTimeout(int64_t nextTick);
+
+  size_t cancelTimeoutsFromList(CallbackList& timeouts);
 
   bool* processingCallbacksGuard_;
-  CallbackList timeouts; // Timeouts queued to run
+  // Timeouts that we're about to run. They're already extracted from their
+  // corresponding buckets, so we need this list for the `cancelAll` to be able
+  // to cancel them.
+  CallbackList timeoutsToRunNow_;
 
   std::chrono::steady_clock::time_point getCurTime() {
     return std::chrono::steady_clock::now();

@@ -357,21 +357,19 @@ struct copy_assignment_mixin<T, true> {
 
 template <typename T>
 struct is_constructible_from_replaceable
-    : std::integral_constant<
-          bool,
+    : bool_constant<
           std::is_constructible<T, Replaceable<T>&>::value ||
-              std::is_constructible<T, Replaceable<T>&&>::value ||
-              std::is_constructible<T, const Replaceable<T>&>::value ||
-              std::is_constructible<T, const Replaceable<T>&&>::value> {};
+          std::is_constructible<T, Replaceable<T>&&>::value ||
+          std::is_constructible<T, const Replaceable<T>&>::value ||
+          std::is_constructible<T, const Replaceable<T>&&>::value> {};
 
 template <typename T>
 struct is_convertible_from_replaceable
-    : std::integral_constant<
-          bool,
+    : bool_constant<
           std::is_convertible<Replaceable<T>&, T>::value ||
-              std::is_convertible<Replaceable<T>&&, T>::value ||
-              std::is_convertible<const Replaceable<T>&, T>::value ||
-              std::is_convertible<const Replaceable<T>&&, T>::value> {};
+          std::is_convertible<Replaceable<T>&&, T>::value ||
+          std::is_convertible<const Replaceable<T>&, T>::value ||
+          std::is_convertible<const Replaceable<T>&&, T>::value> {};
 } // namespace replaceable_detail
 
 // Type trait template to statically test whether a type is a specialization of
@@ -617,7 +615,7 @@ class alignas(T) Replaceable
     return launder(reinterpret_cast<T*>(storage_));
   }
 
-  constexpr const T& operator*() const & {
+  constexpr const T& operator*() const& {
     return *launder(reinterpret_cast<T const*>(storage_));
   }
 
@@ -629,7 +627,7 @@ class alignas(T) Replaceable
     return std::move(*launder(reinterpret_cast<T*>(storage_)));
   }
 
-  constexpr const T&& operator*() const && {
+  constexpr const T&& operator*() const&& {
     return std::move(*launder(reinterpret_cast<T const*>(storage_)));
   }
 
@@ -639,7 +637,7 @@ class alignas(T) Replaceable
   friend struct replaceable_detail::copy_ctor_mixin<T>;
   friend struct replaceable_detail::move_assignment_mixin<T>;
   friend struct replaceable_detail::copy_assignment_mixin<T>;
-  std::aligned_storage_t<sizeof(T), alignof(T)> storage_[1];
+  aligned_storage_for_t<T> storage_[1];
 };
 
 #if __cplusplus > 201402L

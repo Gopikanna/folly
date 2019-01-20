@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <boost/thread/barrier.hpp>
 #include <folly/experimental/FutureDAG.h>
+#include <boost/thread/barrier.hpp>
 #include <folly/portability/GTest.h>
 
 using namespace folly;
@@ -271,5 +271,5 @@ TEST_F(FutureDAGTest, DestroyBeforeComplete) {
     f = localDag->go();
   }
   barrier->wait();
-  ASSERT_NO_THROW(f.get());
+  ASSERT_NO_THROW(std::move(f).get());
 }

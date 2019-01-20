@@ -16,20 +16,19 @@
 
 #pragma once
 
+#include <folly/net/NetworkSocket.h>
+
 namespace folly {
 
 class SocketPair {
  public:
-  enum Mode {
-    BLOCKING,
-    NONBLOCKING
-  };
+  enum Mode { BLOCKING, NONBLOCKING };
 
   explicit SocketPair(Mode mode = NONBLOCKING);
   ~SocketPair();
 
   int operator[](int index) const {
-    return fds_[index];
+    return fds_[index].toFd();
   }
 
   void closeFD0();
@@ -42,13 +41,13 @@ class SocketPair {
     return extractFD(1);
   }
   int extractFD(int index) {
-    int fd = fds_[index];
-    fds_[index] = -1;
-    return fd;
+    auto fd = fds_[index];
+    fds_[index] = NetworkSocket();
+    return fd.toFd();
   }
 
  private:
-  int fds_[2];
+  NetworkSocket fds_[2];
 };
 
 } // namespace folly

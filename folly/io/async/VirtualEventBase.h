@@ -19,6 +19,7 @@
 #include <future>
 
 #include <folly/Executor.h>
+#include <folly/Synchronized.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/synchronization/Baton.h>
 
@@ -121,9 +122,9 @@ class VirtualEventBase : public folly::Executor, public folly::TimeoutManager {
 
  protected:
   bool keepAliveAcquire() override {
-    DCHECK(loopKeepAliveCount_ + loopKeepAliveCountAtomic_.load() > 0);
-
     if (evb_->inRunningEventBaseThread()) {
+      DCHECK(loopKeepAliveCount_ + loopKeepAliveCountAtomic_.load() > 0);
+
       ++loopKeepAliveCount_;
     } else {
       ++loopKeepAliveCountAtomic_;

@@ -40,8 +40,8 @@ class EventBaseLocalBase : public EventBaseLocalBaseBase, boost::noncopyable {
   void* getVoid(EventBase& evb);
 
   folly::Synchronized<std::unordered_set<EventBase*>> eventBases_;
-  static std::atomic<uint64_t> keyCounter_;
-  uint64_t key_{keyCounter_++};
+  static std::atomic<std::size_t> keyCounter_;
+  std::size_t key_{keyCounter_++};
 };
 
 } // namespace detail
@@ -73,7 +73,7 @@ class EventBaseLocalBase : public EventBaseLocalBaseBase, boost::noncopyable {
 template <typename T>
 class EventBaseLocal : public detail::EventBaseLocalBase {
  public:
-  EventBaseLocal(): EventBaseLocalBase() {}
+  EventBaseLocal() : EventBaseLocalBase() {}
 
   T* get(EventBase& evb) {
     return static_cast<T*>(getVoid(evb));
@@ -102,7 +102,7 @@ class EventBaseLocal : public detail::EventBaseLocalBase {
   }
 
   template <typename Func>
-  T& getOrCreateFn(EventBase& evb, Func& fn) {
+  T& getOrCreateFn(EventBase& evb, Func fn) {
     // If this looks like it's copy/pasted from above, that's because it is.
     // gcc has a bug (fixed in 4.9) that doesn't allow capturing variadic
     // params in a lambda.

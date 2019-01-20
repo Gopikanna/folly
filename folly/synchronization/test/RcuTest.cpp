@@ -212,10 +212,8 @@ TEST(RcuTest, MoveReaderBetweenThreads) {
 }
 
 TEST(RcuTest, ForkTest) {
-  rcu_token epoch;
-  std::thread t([&]() {
-    epoch = rcu_default_domain()->lock_shared();
-  });
+  rcu_token<RcuTag> epoch;
+  std::thread t([&]() { epoch = rcu_default_domain()->lock_shared(); });
   t.join();
   auto pid = fork();
   if (pid) {

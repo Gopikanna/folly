@@ -6,10 +6,6 @@ include(CheckSymbolExists)
 include(CheckTypeSize)
 include(CheckCXXCompilerFlag)
 
-CHECK_INCLUDE_FILE_CXX(malloc.h FOLLY_HAVE_MALLOC_H)
-CHECK_INCLUDE_FILE_CXX(bits/c++config.h FOLLY_HAVE_BITS_CXXCONFIG_H)
-CHECK_INCLUDE_FILE_CXX(features.h FOLLY_HAVE_FEATURES_H)
-CHECK_INCLUDE_FILE_CXX(linux/membarrier.h FOLLY_HAVE_LINUX_MEMBARRIER_H)
 CHECK_INCLUDE_FILE_CXX(jemalloc/jemalloc.h FOLLY_USE_JEMALLOC)
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -19,7 +15,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     -Werror=unknown-warning-option
     COMPILER_HAS_UNKNOWN_WARNING_OPTION)
   if (COMPILER_HAS_UNKNOWN_WARNING_OPTION)
-    list(APPEND CMAKE_REQUIRED_FLAGS -Werror=unknown-warning-option)
+    set(CMAKE_REQUIRED_FLAGS
+      "${CMAKE_REQUIRED_FLAGS} -Werror=unknown-warning-option")
   endif()
 
   CHECK_CXX_COMPILER_FLAG(-Wshadow-local COMPILER_HAS_W_SHADOW_LOCAL)
@@ -61,6 +58,13 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
   endif()
 endif()
 
+set(FOLLY_ORIGINAL_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+string(REGEX REPLACE
+  "-std=(c|gnu)\\+\\+.."
+  ""
+  CMAKE_REQUIRED_FLAGS
+  "${CMAKE_REQUIRED_FLAGS}")
+
 check_symbol_exists(pthread_atfork pthread.h FOLLY_HAVE_PTHREAD_ATFORK)
 
 # Unfortunately check_symbol_exists() does not work for memrchr():
@@ -69,12 +73,11 @@ check_function_exists(memrchr FOLLY_HAVE_MEMRCHR)
 check_symbol_exists(preadv sys/uio.h FOLLY_HAVE_PREADV)
 check_symbol_exists(pwritev sys/uio.h FOLLY_HAVE_PWRITEV)
 check_symbol_exists(clock_gettime time.h FOLLY_HAVE_CLOCK_GETTIME)
+check_symbol_exists(pipe2 unistd.h FOLLY_HAVE_PIPE2)
 
-check_function_exists(
-  cplus_demangle_v3_callback
-  FOLLY_HAVE_CPLUS_DEMANGLE_V3_CALLBACK
-)
 check_function_exists(malloc_usable_size FOLLY_HAVE_MALLOC_USABLE_SIZE)
+
+set(CMAKE_REQUIRED_FLAGS "${FOLLY_ORIGINAL_CMAKE_REQUIRED_FLAGS}")
 
 check_cxx_source_compiles("
   #pragma GCC diagnostic error \"-Wattributes\"
@@ -175,6 +178,15 @@ check_cxx_source_compiles("
   #endif
   int main() { return 0; }"
   FOLLY_USE_LIBCPP
+)
+
+check_cxx_source_compiles("
+  #include <type_traits>
+  #if !__GLIBCXX__
+  #error No libstdc++
+  #endif
+  int main() { return 0; }"
+  FOLLY_USE_LIBSTDCPP
 )
 
 check_cxx_source_runs("

@@ -26,8 +26,8 @@ namespace folly {
 template <class T>
 class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
  public:
-  explicit DecoratedAsyncTransportWrapper(typename T::UniquePtr transport):
-    transport_(std::move(transport)) {}
+  explicit DecoratedAsyncTransportWrapper(typename T::UniquePtr transport)
+      : transport_(std::move(transport)) {}
 
   const AsyncTransportWrapper* getWrappedTransport() const override {
     return transport_.get();
@@ -172,7 +172,7 @@ class DecoratedAsyncTransportWrapper : public folly::AsyncTransportWrapper {
     transport_->shutdownWriteNow();
   }
 
-  std::string getApplicationProtocol() noexcept override {
+  std::string getApplicationProtocol() const noexcept override {
     return transport_->getApplicationProtocol();
   }
 

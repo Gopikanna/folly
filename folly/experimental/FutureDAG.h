@@ -123,7 +123,7 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
 
       collect(dependencies)
           .via(nodes[handle].executor)
-          .then([this, handle] {
+          .thenValue([this, handle](std::vector<Unit>&&) {
             nodes[handle].func().then([this, handle](Try<Unit>&& t) {
               nodes[handle].promise.setTry(std::move(t));
             });
@@ -134,8 +134,8 @@ class FutureDAG : public std::enable_shared_from_this<FutureDAG> {
     }
 
     nodes[sourceHandle].promise.setValue();
-    return nodes[sinkHandle].promise.getFuture().then(
-        [that = shared_from_this(), sourceHandle, sinkHandle]() {
+    return nodes[sinkHandle].promise.getFuture().thenValue(
+        [that = shared_from_this(), sourceHandle, sinkHandle](Unit) {
           that->clean_state(sourceHandle, sinkHandle);
         });
   }
@@ -218,10 +218,10 @@ class FutureDAGFunctor {
   void exec() {
     this->dag->go().get();
   }
-  virtual void operator()(){}
+  virtual void operator()() {}
   explicit FutureDAGFunctor(T init_val) : state(init_val) {}
   FutureDAGFunctor() : state() {}
-  virtual ~FutureDAGFunctor(){}
+  virtual ~FutureDAGFunctor() {}
 };
 
 } // namespace folly

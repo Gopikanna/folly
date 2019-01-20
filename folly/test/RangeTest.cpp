@@ -20,6 +20,7 @@
 #include <folly/Range.h>
 
 #include <array>
+#include <deque>
 #include <iterator>
 #include <limits>
 #include <random>
@@ -220,6 +221,19 @@ TEST(StringPiece, All) {
   EXPECT_GE(s2, s);
   EXPECT_EQ(s, s2);
   EXPECT_EQ(s2, s);
+}
+
+TEST(StringPiece, CustomAllocator) {
+  using Alloc = AlignedSysAllocator<char>;
+  Alloc const alloc{32};
+  char const* const text = "foo bar baz";
+  std::basic_string<char, std::char_traits<char>, Alloc> str{text, alloc};
+  EXPECT_EQ("foo", StringPiece(str).subpiece(0, 3));
+  EXPECT_EQ("bar", StringPiece(str, 4).subpiece(0, 3));
+  EXPECT_EQ("baz", StringPiece(str, 8, 3));
+  StringPiece piece;
+  piece.reset(str);
+  EXPECT_EQ("foo", piece.subpiece(0, 3));
 }
 
 template <class T>
@@ -1093,7 +1107,7 @@ void testRangeFunc(C&& x, size_t n) {
   const auto& cx = x;
   // type, conversion checks
   using R1Iter =
-      _t<std::conditional<_t<std::is_reference<C>>::value, int*, int const*>>;
+      std::conditional_t<_t<std::is_reference<C>>::value, int*, int const*>;
   Range<R1Iter> r1 = range(std::forward<C>(x));
   Range<const int*> r2 = range(std::forward<C>(x));
   Range<const int*> r3 = range(cx);
@@ -1431,6 +1445,23 @@ TEST(Range, LiteralSuffixContainsNulBytes) {
   EXPECT_EQ(5u, literalPiece.size());
 }
 
+class tag {};
+class fake_string_view {
+ private:
+  StringPiece piece_;
+
+ public:
+  using size_type = std::size_t;
+  explicit fake_string_view(char const* s, size_type c, tag = {})
+      : piece_(s, c) {}
+  /* implicit */ operator StringPiece() const {
+    return piece_;
+  }
+  friend bool operator==(char const* rhs, fake_string_view lhs) {
+    return rhs == lhs.piece_;
+  }
+};
+
 TEST(Range, StringPieceExplicitConversionOperator) {
   using PieceM = StringPiece;
   using PieceC = StringPiece const;
@@ -1438,16 +1469,20 @@ TEST(Range, StringPieceExplicitConversionOperator) {
   EXPECT_FALSE((std::is_convertible<PieceM, int>::value));
   EXPECT_FALSE((std::is_convertible<PieceM, std::string>::value));
   EXPECT_FALSE((std::is_convertible<PieceM, std::vector<char>>::value));
+  EXPECT_FALSE((std::is_convertible<PieceM, fake_string_view>::value));
   EXPECT_FALSE((std::is_constructible<int, PieceM>::value));
   EXPECT_TRUE((std::is_constructible<std::string, PieceM>::value));
   EXPECT_TRUE((std::is_constructible<std::vector<char>, PieceM>::value));
+  EXPECT_TRUE((std::is_constructible<fake_string_view, PieceM>::value));
 
   EXPECT_FALSE((std::is_convertible<PieceC, int>::value));
   EXPECT_FALSE((std::is_convertible<PieceC, std::string>::value));
   EXPECT_FALSE((std::is_convertible<PieceC, std::vector<char>>::value));
+  EXPECT_FALSE((std::is_convertible<PieceC, fake_string_view>::value));
   EXPECT_FALSE((std::is_constructible<int, PieceC>::value));
   EXPECT_TRUE((std::is_constructible<std::string, PieceC>::value));
   EXPECT_TRUE((std::is_constructible<std::vector<char>, PieceC>::value));
+  EXPECT_TRUE((std::is_constructible<fake_string_view, PieceC>::value));
 
   using testing::ElementsAreArray;
   std::array<char, 5> array = {{'h', 'e', 'l', 'l', 'o'}};
@@ -1472,6 +1507,15 @@ TEST(Range, StringPieceExplicitConversionOperator) {
   EXPECT_THAT(piecec.to<std::vector<char>>(), ElementsAreArray(array));
   EXPECT_THAT(piecem.to<std::vector<char>>(alloc), ElementsAreArray(array));
   EXPECT_THAT(piecec.to<std::vector<char>>(alloc), ElementsAreArray(array));
+
+  EXPECT_EQ("hello", fake_string_view(piecem));
+  EXPECT_EQ("hello", fake_string_view(piecec));
+  EXPECT_EQ("hello", fake_string_view{piecem});
+  EXPECT_EQ("hello", fake_string_view{piecec});
+  EXPECT_EQ("hello", piecem.to<fake_string_view>());
+  EXPECT_EQ("hello", piecec.to<fake_string_view>());
+  EXPECT_EQ("hello", piecem.to<fake_string_view>(tag{}));
+  EXPECT_EQ("hello", piecec.to<fake_string_view>(tag{}));
 }
 
 TEST(Range, MutableStringPieceExplicitConversionOperator) {
@@ -1481,16 +1525,20 @@ TEST(Range, MutableStringPieceExplicitConversionOperator) {
   EXPECT_FALSE((std::is_convertible<PieceM, int>::value));
   EXPECT_FALSE((std::is_convertible<PieceM, std::string>::value));
   EXPECT_FALSE((std::is_convertible<PieceM, std::vector<char>>::value));
+  EXPECT_FALSE((std::is_convertible<PieceM, fake_string_view>::value));
   EXPECT_FALSE((std::is_constructible<int, PieceM>::value));
   EXPECT_TRUE((std::is_constructible<std::string, PieceM>::value));
   EXPECT_TRUE((std::is_constructible<std::vector<char>, PieceM>::value));
+  EXPECT_TRUE((std::is_constructible<fake_string_view, PieceM>::value));
 
   EXPECT_FALSE((std::is_convertible<PieceC, int>::value));
   EXPECT_FALSE((std::is_convertible<PieceC, std::string>::value));
   EXPECT_FALSE((std::is_convertible<PieceC, std::vector<char>>::value));
+  EXPECT_FALSE((std::is_convertible<PieceC, fake_string_view>::value));
   EXPECT_FALSE((std::is_constructible<int, PieceC>::value));
   EXPECT_TRUE((std::is_constructible<std::string, PieceC>::value));
   EXPECT_TRUE((std::is_constructible<std::vector<char>, PieceC>::value));
+  EXPECT_TRUE((std::is_constructible<fake_string_view, PieceC>::value));
 
   using testing::ElementsAreArray;
   std::array<char, 5> array = {{'h', 'e', 'l', 'l', 'o'}};
@@ -1515,4 +1563,93 @@ TEST(Range, MutableStringPieceExplicitConversionOperator) {
   EXPECT_THAT(piecec.to<std::vector<char>>(), ElementsAreArray(array));
   EXPECT_THAT(piecem.to<std::vector<char>>(alloc), ElementsAreArray(array));
   EXPECT_THAT(piecec.to<std::vector<char>>(alloc), ElementsAreArray(array));
+
+  EXPECT_EQ("hello", fake_string_view(piecem));
+  EXPECT_EQ("hello", fake_string_view(piecec));
+  EXPECT_EQ("hello", fake_string_view{piecem});
+  EXPECT_EQ("hello", fake_string_view{piecec});
+  EXPECT_EQ("hello", piecem.to<fake_string_view>());
+  EXPECT_EQ("hello", piecec.to<fake_string_view>());
+  EXPECT_EQ("hello", piecem.to<fake_string_view>(tag{}));
+  EXPECT_EQ("hello", piecec.to<fake_string_view>(tag{}));
 }
+
+#if FOLLY_HAS_STRING_VIEW
+namespace {
+std::size_t stringViewSize(std::string_view s) {
+  return s.size();
+}
+
+std::size_t stringPieceSize(StringPiece s) {
+  return s.size();
+}
+
+struct TrickyTarget {
+  TrickyTarget(char const*, char const*) : which{1} {}
+  TrickyTarget(char const*, std::size_t) : which{2} {}
+  TrickyTarget(std::string_view) : which{3} {}
+
+  int which;
+};
+
+struct TrickierTarget {
+  TrickierTarget(std::deque<char>::const_iterator, std::size_t) : which{1} {}
+  TrickierTarget(std::string_view) : which{2} {}
+
+  int which;
+};
+} // namespace
+
+TEST(StringPiece, StringViewConversion) {
+  StringPiece piece("foo");
+  std::string str("bar");
+  MutableStringPiece mut(str.data(), str.size());
+  std::string_view view("baz");
+
+  EXPECT_EQ(stringViewSize(piece), 3);
+  EXPECT_EQ(stringViewSize(str), 3);
+  EXPECT_EQ(stringViewSize(mut), 3);
+  EXPECT_EQ(stringPieceSize(mut), 3);
+  EXPECT_EQ(stringPieceSize(str), 3);
+  EXPECT_EQ(stringPieceSize(view), 3);
+
+  view = mut;
+  piece = view;
+  EXPECT_EQ(piece[2], 'r');
+  piece = "quux";
+  view = piece;
+  EXPECT_EQ(view.size(), 4);
+
+  TrickyTarget tt1(piece);
+  EXPECT_EQ(tt1.which, 3);
+  TrickyTarget tt2(view);
+  EXPECT_EQ(tt2.which, 3);
+
+  std::deque<char> deq;
+  deq.push_back('a');
+  deq.push_back('b');
+  deq.push_back('c');
+  Range<std::deque<char>::const_iterator> deqRange{deq.begin(), deq.end()};
+  TrickierTarget tt3(deqRange);
+  EXPECT_EQ(tt3.which, 1);
+}
+
+namespace {
+
+// Range with non-pod value type should not cause compile errors.
+class NonPOD {
+ public:
+  NonPOD() {}
+};
+void test_func(Range<const NonPOD*>) {}
+
+} // anonymous namespace
+
+#endif
+
+namespace {
+// Nested class should not cause compile errors due to incomplete parent
+class Parent {
+  struct Nested : Range<const Parent*> {};
+};
+} // namespace

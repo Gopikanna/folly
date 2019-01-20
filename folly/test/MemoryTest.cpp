@@ -16,17 +16,30 @@
 
 #include <folly/Memory.h>
 
+#include <limits>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
 #include <glog/logging.h>
 
+#include <folly/ConstexprMath.h>
 #include <folly/String.h>
 #include <folly/memory/Arena.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GTest.h>
 
 using namespace folly;
+
+static constexpr std::size_t kTooBig = folly::constexpr_max(
+    std::size_t{std::numeric_limits<uint32_t>::max()},
+    std::size_t{1} << (8 * sizeof(std::size_t) - 14));
+
+TEST(allocateBytes, simple) {
+  auto p = allocateBytes(10);
+  EXPECT_TRUE(p != nullptr);
+  deallocateBytes(p, 10);
+}
 
 TEST(aligned_malloc, examples) {
   auto trial = [](size_t align) {
@@ -86,7 +99,7 @@ TEST(SysAllocator, bad_alloc) {
   Alloc const alloc;
   std::vector<float, Alloc> nums(alloc);
   if (!kIsSanitize) {
-    EXPECT_THROW(nums.reserve(1ull << 50), std::bad_alloc);
+    EXPECT_THROW(nums.reserve(kTooBig), std::bad_alloc);
   }
 }
 
@@ -120,7 +133,7 @@ TEST(AlignedSysAllocator, bad_alloc_fixed) {
   Alloc const alloc;
   std::vector<float, Alloc> nums(alloc);
   if (!kIsSanitize) {
-    EXPECT_THROW(nums.reserve(1ull << 50), std::bad_alloc);
+    EXPECT_THROW(nums.reserve(kTooBig), std::bad_alloc);
   }
 }
 
@@ -156,13 +169,72 @@ TEST(AlignedSysAllocator, bad_alloc_default) {
   Alloc const alloc(1024);
   std::vector<float, Alloc> nums(alloc);
   if (!kIsSanitize) {
-    EXPECT_THROW(nums.reserve(1ull << 50), std::bad_alloc);
+    EXPECT_THROW(nums.reserve(kTooBig), std::bad_alloc);
   }
+}
+
+TEST(AlignedSysAllocator, converting_constructor) {
+  using Alloc1 = AlignedSysAllocator<float>;
+  using Alloc2 = AlignedSysAllocator<double>;
+  Alloc1 const alloc1(1024);
+  Alloc2 const alloc2(alloc1);
 }
 
 TEST(allocate_sys_buffer, compiles) {
   auto buf = allocate_sys_buffer(256);
   //  Freed at the end of the scope.
+}
+
+struct CountedAllocatorStats {
+  size_t deallocates = 0;
+};
+
+template <typename T>
+class CountedAllocator : public std::allocator<T> {
+ private:
+  CountedAllocatorStats* stats_;
+
+ public:
+  explicit CountedAllocator(CountedAllocatorStats& stats) noexcept
+      : stats_(&stats) {}
+  void deallocate(T* p, size_t n) {
+    std::allocator<T>::deallocate(p, n);
+    ++stats_->deallocates;
+  }
+};
+
+TEST(allocate_unique, ctor_failure) {
+  struct CtorThrows {
+    explicit CtorThrows(bool cond) {
+      if (cond) {
+        throw std::runtime_error("nope");
+      }
+    }
+  };
+  using Alloc = CountedAllocator<CtorThrows>;
+  using Deleter = allocator_delete<CountedAllocator<CtorThrows>>;
+  {
+    CountedAllocatorStats stats;
+    Alloc const alloc(stats);
+    EXPECT_EQ(0, stats.deallocates);
+    std::unique_ptr<CtorThrows, Deleter> ptr{nullptr, Deleter{alloc}};
+    ptr = allocate_unique<CtorThrows>(alloc, false);
+    EXPECT_NE(nullptr, ptr);
+    EXPECT_EQ(0, stats.deallocates);
+    ptr = nullptr;
+    EXPECT_EQ(nullptr, ptr);
+    EXPECT_EQ(1, stats.deallocates);
+  }
+  {
+    CountedAllocatorStats stats;
+    Alloc const alloc(stats);
+    EXPECT_EQ(0, stats.deallocates);
+    std::unique_ptr<CtorThrows, Deleter> ptr{nullptr, Deleter{alloc}};
+    EXPECT_THROW(
+        ptr = allocate_unique<CtorThrows>(alloc, true), std::runtime_error);
+    EXPECT_EQ(nullptr, ptr);
+    EXPECT_EQ(1, stats.deallocates);
+  }
 }
 
 namespace {
@@ -265,48 +337,78 @@ TEST(AllocatorObjectLifecycleTraits, compiles) {
       !folly::AllocatorHasDefaultObjectDestroy<TestAlloc5<S>, S>::value, "");
 }
 
-template <typename C>
-static void test_enable_shared_from_this(std::shared_ptr<C> sp) {
-  ASSERT_EQ(1l, sp.use_count());
+template <typename T>
+struct ExpectingAlloc {
+  using value_type = T;
 
-  // Test shared_from_this().
-  std::shared_ptr<C> sp2 = sp->shared_from_this();
-  ASSERT_EQ(sp, sp2);
+  ExpectingAlloc(std::size_t expectedSize, std::size_t expectedCount)
+      : expectedSize_{expectedSize}, expectedCount_{expectedCount} {}
 
-  // Test weak_from_this().
-  std::weak_ptr<C> wp = sp->weak_from_this();
-  ASSERT_EQ(sp, wp.lock());
-  sp.reset();
-  sp2.reset();
-  ASSERT_EQ(nullptr, wp.lock());
+  template <class U>
+  explicit ExpectingAlloc(ExpectingAlloc<U> const& other) noexcept
+      : expectedSize_{other.expectedSize_},
+        expectedCount_{other.expectedCount_} {}
 
-  // Test shared_from_this() and weak_from_this() on object not owned by a
-  // shared_ptr. Undefined in C++14 but well-defined in C++17. Also known to
-  // work with libstdc++ >= 20150123. Feel free to add other standard library
-  // versions where the behavior is known.
-#if __cplusplus >= 201700L || __GLIBCXX__ >= 20150123L
-  C stack_resident;
-  ASSERT_THROW(stack_resident.shared_from_this(), std::bad_weak_ptr);
-  ASSERT_TRUE(stack_resident.weak_from_this().expired());
-#endif
+  T* allocate(std::size_t n) {
+    EXPECT_EQ(expectedSize_, sizeof(T));
+    EXPECT_EQ(expectedSize_, alignof(T));
+    EXPECT_EQ(expectedCount_, n);
+    return std::allocator<T>{}.allocate(n);
+  }
+
+  void deallocate(T* p, std::size_t n) {
+    std::allocator<T>{}.deallocate(p, n);
+  }
+
+  std::size_t expectedSize_;
+  std::size_t expectedCount_;
+};
+
+struct alignas(64) OverAlignedType {
+  std::array<char, 64> raw_;
+};
+
+TEST(allocateOverAligned, notActuallyOver) {
+  // allocates 6 bytes with alignment 4, should get turned into an
+  // allocation of 2 elements of something of size and alignment 4
+  ExpectingAlloc<char> a(4, 2);
+  auto p = folly::allocateOverAligned<decltype(a), 4>(a, 6);
+  EXPECT_EQ((reinterpret_cast<uintptr_t>(p) % 4), 0);
+  folly::deallocateOverAligned<decltype(a), 4>(a, p, 6);
+  EXPECT_EQ((folly::allocationBytesForOverAligned<decltype(a), 4>(6)), 8);
 }
 
-TEST(enable_shared_from_this, compatible_with_std_enable_shared_from_this) {
-  // Compile-time compatibility.
-  class C_std : public std::enable_shared_from_this<C_std> {};
-  class C_folly : public folly::enable_shared_from_this<C_folly> {};
-  static_assert(
-      noexcept(std::declval<C_std>().shared_from_this()) ==
-          noexcept(std::declval<C_folly>().shared_from_this()),
-      "");
-  static_assert(
-      noexcept(std::declval<C_std const>().shared_from_this()) ==
-          noexcept(std::declval<C_folly const>().shared_from_this()),
-      "");
-  static_assert(noexcept(std::declval<C_folly>().weak_from_this()), "");
-  static_assert(noexcept(std::declval<C_folly const>().weak_from_this()), "");
+TEST(allocateOverAligned, manualOverStdAlloc) {
+  // allocates 6 bytes with alignment 64 using std::allocator, which will
+  // result in a call to aligned_malloc underneath.  We free one directly
+  // to check that this is not the padding path
+  std::allocator<short> a;
+  auto p = folly::allocateOverAligned<decltype(a), 64>(a, 3);
+  auto p2 = folly::allocateOverAligned<decltype(a), 64>(a, 3);
+  EXPECT_EQ((reinterpret_cast<uintptr_t>(p) % 64), 0);
+  folly::deallocateOverAligned<decltype(a), 64>(a, p, 3);
+  aligned_free(p2);
+  EXPECT_EQ((folly::allocationBytesForOverAligned<decltype(a), 64>(3)), 6);
+}
 
-  // Runtime compatibility.
-  test_enable_shared_from_this(std::make_shared<C_folly>());
-  test_enable_shared_from_this(std::make_shared<C_folly const>());
+TEST(allocateOverAligned, manualOverCustomAlloc) {
+  // allocates 6 byte with alignment 64 using non-standard allocator, which
+  // will result in an allocation of 64 + alignof(max_align_t) underneath.
+  ExpectingAlloc<short> a(
+      alignof(folly::max_align_t), 64 / alignof(folly::max_align_t) + 1);
+  auto p = folly::allocateOverAligned<decltype(a), 64>(a, 3);
+  EXPECT_EQ((reinterpret_cast<uintptr_t>(p) % 64), 0);
+  folly::deallocateOverAligned<decltype(a), 64>(a, p, 3);
+  EXPECT_EQ(
+      (folly::allocationBytesForOverAligned<decltype(a), 64>(3)),
+      64 + alignof(folly::max_align_t));
+}
+
+TEST(allocateOverAligned, defaultOverCustomAlloc) {
+  ExpectingAlloc<OverAlignedType> a(
+      alignof(folly::max_align_t), 128 / alignof(folly::max_align_t));
+  auto p = folly::allocateOverAligned(a, 1);
+  EXPECT_EQ((reinterpret_cast<uintptr_t>(p) % 64), 0);
+  folly::deallocateOverAligned(a, p, 1);
+  EXPECT_EQ(folly::allocationBytesForOverAligned<decltype(a)>(1), 128);
 }

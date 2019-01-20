@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
+#include <atomic>
 #include <memory>
 #include <thread>
+
+#include <boost/thread.hpp>
 
 #include <folly/Exception.h>
 #include <folly/VirtualExecutor.h>
@@ -28,6 +31,7 @@
 #include <folly/executors/thread_factory/InitThreadFactory.h>
 #include <folly/executors/thread_factory/PriorityThreadFactory.h>
 #include <folly/portability/GTest.h>
+#include <folly/synchronization/detail/Spin.h>
 
 using namespace folly;
 using namespace std::chrono;
@@ -130,6 +134,47 @@ TEST(ThreadPoolExecutorTest, CPUJoin) {
 
 TEST(ThreadPoolExecutorTest, IOJoin) {
   join<IOThreadPoolExecutor>();
+}
+
+template <class TPE>
+static void destroy() {
+  TPE tpe(1);
+  std::atomic<int> completed(0);
+  auto f = [&]() {
+    burnMs(10)();
+    completed++;
+  };
+  for (int i = 0; i < 1000; i++) {
+    tpe.add(f);
+  }
+  tpe.stop();
+  EXPECT_GT(1000, completed);
+}
+
+// IOThreadPoolExecutor's destuctor joins all tasks. Outstanding tasks belong
+// to the event base, will be executed upon its destruction, and cannot be
+// taken back.
+template <>
+void destroy<IOThreadPoolExecutor>() {
+  Optional<IOThreadPoolExecutor> tpe(in_place, 1);
+  std::atomic<int> completed(0);
+  auto f = [&]() {
+    burnMs(10)();
+    completed++;
+  };
+  for (int i = 0; i < 10; i++) {
+    tpe->add(f);
+  }
+  tpe.clear();
+  EXPECT_EQ(10, completed);
+}
+
+TEST(ThreadPoolExecutorTest, CPUDestroy) {
+  destroy<CPUThreadPoolExecutor>();
+}
+
+TEST(ThreadPoolExecutorTest, IODestroy) {
+  destroy<IOThreadPoolExecutor>();
 }
 
 template <class TPE>
@@ -463,6 +508,42 @@ TEST(InitThreadFactoryTest, InitializerCalled) {
   EXPECT_EQ(initializerCalledCount, 1);
 }
 
+TEST(InitThreadFactoryTest, InitializerAndFinalizerCalled) {
+  bool initializerCalled = false;
+  bool taskBodyCalled = false;
+  bool finalizerCalled = false;
+
+  InitThreadFactory factory(
+      std::make_shared<NamedThreadFactory>("test"),
+      [&] {
+        // thread initializer
+        EXPECT_FALSE(initializerCalled);
+        EXPECT_FALSE(taskBodyCalled);
+        EXPECT_FALSE(finalizerCalled);
+        initializerCalled = true;
+      },
+      [&] {
+        // thread finalizer
+        EXPECT_TRUE(initializerCalled);
+        EXPECT_TRUE(taskBodyCalled);
+        EXPECT_FALSE(finalizerCalled);
+        finalizerCalled = true;
+      });
+
+  factory
+      .newThread([&]() {
+        EXPECT_TRUE(initializerCalled);
+        EXPECT_FALSE(taskBodyCalled);
+        EXPECT_FALSE(finalizerCalled);
+        taskBodyCalled = true;
+      })
+      .join();
+
+  EXPECT_TRUE(initializerCalled);
+  EXPECT_TRUE(taskBodyCalled);
+  EXPECT_TRUE(finalizerCalled);
+}
+
 class TestData : public folly::RequestData {
  public:
   explicit TestData(int data) : data_(data) {}
@@ -491,16 +572,20 @@ TEST(ThreadPoolExecutorTest, RequestContext) {
   });
 }
 
+std::atomic<int> g_sequence{};
+
 struct SlowMover {
   explicit SlowMover(bool slow_ = false) : slow(slow_) {}
   SlowMover(SlowMover&& other) noexcept {
     *this = std::move(other);
   }
   SlowMover& operator=(SlowMover&& other) noexcept {
+    ++g_sequence;
     slow = other.slow;
     if (slow) {
       /* sleep override */ std::this_thread::sleep_for(milliseconds(50));
     }
+    ++g_sequence;
     return *this;
   }
 
@@ -558,6 +643,44 @@ TEST(ThreadPoolExecutorTest, UnboundedBlockingQueueBugD3527722) {
   bugD3527722_test<UBQ<SlowMover>>();
 }
 
+template <typename Q>
+void nothrow_not_full_test() {
+  /* LifoSemMPMCQueue should not throw when not full when active
+     consumers are delayed. */
+  Q q(2);
+  g_sequence = 0;
+
+  std::thread consumer1([&] {
+    while (g_sequence < 4) {
+      ;
+    }
+    q.take(); // ++g_sequence to 5 then slow
+  });
+  std::thread consumer2([&] {
+    while (g_sequence < 5) {
+      ;
+    }
+    q.take(); // ++g_sequence to 6 and 7 - fast
+  });
+
+  std::thread producer([&] {
+    q.add(SlowMover(true)); // ++g_sequence to 1 and 2
+    q.add(SlowMover(false)); // ++g_sequence to 3 and 4
+    while (g_sequence < 7) { // g_sequence == 7 implies queue is not full
+      ;
+    }
+    EXPECT_NO_THROW(q.add(SlowMover(false)));
+  });
+
+  producer.join();
+  consumer1.join();
+  consumer2.join();
+}
+
+TEST(ThreadPoolExecutorTest, LifoSemMPMCQueueNoThrowNotFull) {
+  nothrow_not_full_test<LifoSemMPMCQueue<SlowMover>>();
+}
+
 template <typename TPE>
 static void removeThreadTest() {
   // test that adding a .then() after we have removed some threads
@@ -567,18 +690,18 @@ static void removeThreadTest() {
   TPE fe(2);
   f = folly::makeFuture()
           .via(&fe)
-          .then([&id1]() {
+          .thenValue([&id1](auto&&) {
             burnMs(100)();
             id1 = std::this_thread::get_id();
           })
-          .then([&id2]() {
+          .thenValue([&id2](auto&&) {
             return 77;
             id2 = std::this_thread::get_id();
           });
   fe.setNumThreads(1);
 
   // future::then should be fulfilled because there is other thread available
-  EXPECT_EQ(77, f->get());
+  EXPECT_EQ(77, std::move(*f).get());
   // two thread should be different because then part should be rescheduled to
   // the other thread
   EXPECT_NE(id1, id2);
@@ -627,11 +750,11 @@ template <typename TPE>
 void keepAliveTest() {
   auto executor = std::make_unique<TPE>(4);
 
-  auto f =
-      futures::sleep(std::chrono::milliseconds{100})
-          .via(executor.get())
-          .then([keepAlive = getKeepAliveToken(executor.get())] { return 42; })
-          .semi();
+  auto f = futures::sleep(std::chrono::milliseconds{100})
+               .via(executor.get())
+               .thenValue([keepAlive = getKeepAliveToken(executor.get())](
+                              auto&&) { return 42; })
+               .semi();
 
   executor.reset();
 
@@ -692,16 +815,22 @@ TEST(ThreadPoolExecutorTest, testUsesNameFromNamedThreadFactoryCPU) {
 }
 
 TEST(ThreadPoolExecutorTest, DynamicThreadsTest) {
+  boost::barrier barrier{3};
+  auto twice_waiting_task = [&] { barrier.wait(), barrier.wait(); };
   CPUThreadPoolExecutor e(2);
   e.setThreadDeathTimeout(std::chrono::milliseconds(100));
-  e.add([] { /* sleep override */ usleep(1000); });
-  e.add([] { /* sleep override */ usleep(1000); });
-  auto stats = e.getPoolStats();
-  EXPECT_GE(2, stats.activeThreadCount);
-  /* sleep override */ sleep(1);
-  e.add([] {});
-  stats = e.getPoolStats();
-  EXPECT_LE(stats.activeThreadCount, 0);
+  e.add(twice_waiting_task);
+  e.add(twice_waiting_task);
+  barrier.wait(); // ensure both tasks are mid-flight
+  EXPECT_EQ(2, e.getPoolStats().activeThreadCount) << "sanity check";
+
+  auto pred = [&] { return e.getPoolStats().activeThreadCount == 0; };
+  EXPECT_FALSE(pred()) << "sanity check";
+  barrier.wait(); // let both mid-flight tasks complete
+  EXPECT_EQ(
+      folly::detail::spin_result::success,
+      folly::detail::spin_yield_until(
+          std::chrono::steady_clock::now() + std::chrono::seconds(1), pred));
 }
 
 TEST(ThreadPoolExecutorTest, DynamicThreadAddRemoveRace) {
@@ -744,13 +873,13 @@ static void WeakRefTest() {
     TPE fe(1);
     f = folly::makeFuture()
             .via(&fe)
-            .then([]() { burnMs(100)(); })
-            .then([&] { ++counter; })
+            .thenValue([](auto&&) { burnMs(100)(); })
+            .thenValue([&](auto&&) { ++counter; })
             .via(fe.weakRef())
-            .then([]() { burnMs(100)(); })
-            .then([&] { ++counter; });
+            .thenValue([](auto&&) { burnMs(100)(); })
+            .thenValue([&](auto&&) { ++counter; });
   }
-  EXPECT_THROW(f->get(), folly::BrokenPromise);
+  EXPECT_THROW(std::move(*f).get(), folly::BrokenPromise);
   EXPECT_EQ(1, counter);
 }
 
@@ -766,12 +895,12 @@ static void virtualExecutorTest() {
       VirtualExecutor ve(fe);
       f = futures::sleep(100ms)
               .via(&ve)
-              .then([&] {
+              .thenValue([&](auto&&) {
                 ++counter;
                 return futures::sleep(100ms);
               })
               .via(&fe)
-              .then([&] { ++counter; })
+              .thenValue([&](auto&&) { ++counter; })
               .semi();
     }
     EXPECT_EQ(1, counter);

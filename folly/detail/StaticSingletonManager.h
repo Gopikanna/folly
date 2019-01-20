@@ -16,10 +16,12 @@
 
 #pragma once
 
-#include <cassert>
-#include <mutex>
-#include <typeindex>
-#include <unordered_map>
+#include <atomic>
+#include <typeinfo>
+
+#include <folly/CPortability.h>
+#include <folly/Likely.h>
+#include <folly/detail/Singleton.h>
 
 namespace folly {
 namespace detail {
@@ -30,59 +32,32 @@ namespace detail {
 // dynamically.
 class StaticSingletonManager {
  public:
-  static StaticSingletonManager& instance();
-
-  template <typename T, typename Tag, typename F>
-  inline T* create(F&& creator) {
-    auto& entry = [&]() mutable -> Entry<T>& {
-      std::lock_guard<std::mutex> lg(mutex_);
-
-      auto& id = typeid(TypePair<T, Tag>);
-      auto& entryPtr = map_[id];
-      if (!entryPtr) {
-        entryPtr = new Entry<T>();
-      }
-      assert(dynamic_cast<Entry<T>*>(entryPtr) != nullptr);
-      return *static_cast<Entry<T>*>(entryPtr);
-    }();
-
-    std::lock_guard<std::mutex> lg(entry.mutex);
-
-    if (!entry.ptr) {
-      entry.ptr = creator();
-    }
-    return entry.ptr;
+  template <typename T, typename Tag>
+  FOLLY_EXPORT FOLLY_ALWAYS_INLINE static T& create() {
+    static Cache cache;
+    auto const& key = typeid(TypeTuple<T, Tag>);
+    auto const v = cache.load(std::memory_order_acquire);
+    auto const p = FOLLY_LIKELY(!!v) ? v : create_(key, make<T>, cache);
+    return *static_cast<T*>(p);
   }
 
  private:
-  template <typename A, typename B>
-  class TypePair {};
-
-  StaticSingletonManager() {}
-
-  struct EntryIf {
-    virtual ~EntryIf() {}
-  };
+  using Key = std::type_info;
+  using Make = void*();
+  using Cache = std::atomic<void*>;
 
   template <typename T>
-  struct Entry : public EntryIf {
-    T* ptr{nullptr};
-    std::mutex mutex;
-  };
+  static void* make() {
+    return new T();
+  }
 
-  std::unordered_map<std::type_index, EntryIf*> map_;
-  std::mutex mutex_;
+  FOLLY_NOINLINE static void* create_(Key const& key, Make& make, Cache& cache);
 };
 
-template <typename T, typename Tag, typename F>
-inline T* createGlobal(F&& creator) {
-  return StaticSingletonManager::instance().create<T, Tag>(
-      std::forward<F>(creator));
+template <typename T, typename Tag>
+FOLLY_ALWAYS_INLINE FOLLY_ATTR_VISIBILITY_HIDDEN T& createGlobal() {
+  return StaticSingletonManager::create<T, Tag>();
 }
 
-template <typename T, typename Tag>
-inline T* createGlobal() {
-  return createGlobal<T, Tag>([]() { return new T(); });
-}
 } // namespace detail
 } // namespace folly

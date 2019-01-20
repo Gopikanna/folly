@@ -25,12 +25,12 @@
 #include <folly/portability/PThread.h>
 #include <folly/ssl/Init.h>
 
-using std::string;
-using std::vector;
-using std::min;
 using std::cerr;
 using std::endl;
 using std::list;
+using std::min;
+using std::string;
+using std::vector;
 
 namespace folly {
 
@@ -130,8 +130,7 @@ class AttachDetachClient : public AsyncSocket::ConnectCallback,
     });
   }
 
-  void connectErr(const AsyncSocketException& ex) noexcept override
-  {
+  void connectErr(const AsyncSocketException& ex) noexcept override {
     cerr << "AttachDetachClient::connectError: " << ex.what() << endl;
     sslSocket_.reset();
   }
@@ -140,8 +139,9 @@ class AttachDetachClient : public AsyncSocket::ConnectCallback,
     cerr << "client write success" << endl;
   }
 
-  void writeErr(size_t /* bytesWritten */,
-                const AsyncSocketException& ex) noexcept override {
+  void writeErr(
+      size_t /* bytesWritten */,
+      const AsyncSocketException& ex) noexcept override {
     cerr << "client writeError: " << ex.what() << endl;
   }
 
@@ -188,7 +188,7 @@ TEST(AsyncSSLSocketTest2, AttachDetachSSLContext) {
 
   auto f = client->getFuture();
   client->connect();
-  EXPECT_TRUE(f.within(std::chrono::seconds(3)).get());
+  EXPECT_TRUE(std::move(f).within(std::chrono::seconds(3)).get());
 }
 
 class ConnectClient : public AsyncSocket::ConnectCallback {
@@ -255,7 +255,7 @@ TEST(AsyncSSLSocketTest2, TestTLS12DefaultClient) {
   auto c1 = std::make_unique<ConnectClient>();
   auto f1 = c1->getFuture();
   c1->connect(server.getAddress());
-  EXPECT_TRUE(f1.within(std::chrono::seconds(3)).get());
+  EXPECT_TRUE(std::move(f1).within(std::chrono::seconds(3)).get());
 }
 
 TEST(AsyncSSLSocketTest2, TestTLS12BadClient) {
@@ -275,12 +275,12 @@ TEST(AsyncSSLSocketTest2, TestTLS12BadClient) {
   c2->setCtx(clientCtx);
   auto f2 = c2->getFuture();
   c2->connect(server.getAddress());
-  EXPECT_FALSE(f2.within(std::chrono::seconds(3)).get());
+  EXPECT_FALSE(std::move(f2).within(std::chrono::seconds(3)).get());
 }
 
 } // namespace folly
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   folly::ssl::init();
 #ifdef SIGPIPE
   signal(SIGPIPE, SIG_IGN);

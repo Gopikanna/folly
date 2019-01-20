@@ -73,8 +73,7 @@ class EventBaseObserver {
 
   virtual uint32_t getSampleRate() const = 0;
 
-  virtual void loopSample(
-    int64_t busyTime, int64_t idleTime) = 0;
+  virtual void loopSample(int64_t busyTime, int64_t idleTime) = 0;
 };
 
 // Helper class that sets and retrieves the EventBase associated with a given
@@ -163,9 +162,9 @@ class EventBase : private boost::noncopyable,
     }
 
    private:
-    typedef boost::intrusive::list<
-      LoopCallback,
-      boost::intrusive::constant_time_size<false> > List;
+    typedef boost::intrusive::
+        list<LoopCallback, boost::intrusive::constant_time_size<false>>
+            List;
 
     // EventBase needs access to LoopCallbackList (and therefore to hook_)
     friend class EventBase;
@@ -257,8 +256,8 @@ class EventBase : private boost::noncopyable,
   /**
    * Same as loop(), but doesn't wait for all keep-alive tokens to be released.
    */
-  [[deprecated("This should only be used in legacy unit tests")]]
-  bool loopIgnoreKeepAlive();
+  [[deprecated("This should only be used in legacy unit tests")]] bool
+  loopIgnoreKeepAlive();
 
   /**
    * Wait for some events to become active, run them, then return.
@@ -426,6 +425,55 @@ class EventBase : private boost::noncopyable,
    */
   bool runInEventBaseThread(Func fn);
 
+  /**
+   * Run the specified function in the EventBase's thread.
+   *
+   * This method is thread-safe, and may be called from another thread.
+   *
+   * If runInEventBaseThreadAlwaysEnqueue() is called when the EventBase loop is
+   * not running, the function call will be delayed until the next time the loop
+   * is started.
+   *
+   * If runInEventBaseThreadAlwaysEnqueue() returns true the function has
+   * successfully been scheduled to run in the loop thread.  However, if the
+   * loop is terminated (and never later restarted) before it has a chance to
+   * run the requested function, the function will be run upon the EventBase's
+   * destruction.
+   *
+   * If two calls to runInEventBaseThreadAlwaysEnqueue() are made from the same
+   * thread, the functions will always be run in the order that they were
+   * scheduled. Ordering between functions scheduled from separate threads is
+   * not guaranteed. If a call is made from the EventBase thread, the function
+   * will not be executed inline and will be queued to the same queue as if the
+   * call would have been made from a different thread
+   *
+   * @param fn  The function to run.  The function must not throw any
+   *     exceptions.
+   * @param arg An argument to pass to the function.
+   *
+   * @return Returns true if the function was successfully scheduled, or false
+   *         if there was an error scheduling the function.
+   */
+  template <typename T>
+  bool runInEventBaseThreadAlwaysEnqueue(void (*fn)(T*), T* arg);
+
+  /**
+   * Run the specified function in the EventBase's thread
+   *
+   * This version of runInEventBaseThreadAlwaysEnqueue() takes a folly::Function
+   * object. Note that this may be less efficient than the version that takes a
+   * plain function pointer and void* argument, if moving the function is
+   * expensive (e.g., if it wraps a lambda which captures some values with
+   * expensive move constructors).
+   *
+   * If the loop is terminated (and never later restarted) before it has a
+   * chance to run the requested function, the function will be run upon the
+   * EventBase's destruction.
+   *
+   * The function must not throw any exceptions.
+   */
+  bool runInEventBaseThreadAlwaysEnqueue(Func fn);
+
   /*
    * Like runInEventBaseThread, but the caller waits for the callback to be
    * executed.
@@ -483,7 +531,7 @@ class EventBase : private boost::noncopyable,
   }
 
   /**
-    * check if the event base loop is running.
+   * check if the event base loop is running.
    */
   bool isRunning() const {
     return loopThread_.load(std::memory_order_relaxed) != std::thread::id();
@@ -535,7 +583,9 @@ class EventBase : private boost::noncopyable,
   // Avoid using these functions if possible.  These functions are not
   // guaranteed to always be present if we ever provide alternative EventBase
   // implementations that do not use libevent internally.
-  event_base* getLibeventBase() const { return evb_; }
+  event_base* getLibeventBase() const {
+    return evb_;
+  }
   static const char* getLibeventVersion();
   static const char* getLibeventMethod();
 
@@ -579,7 +629,7 @@ class EventBase : private boost::noncopyable,
     double value_;
     std::chrono::microseconds buffer_time_{0};
     std::chrono::microseconds busy_buffer_{0};
-    uint64_t buffer_cnt_{0};
+    std::size_t buffer_cnt_{0};
     static constexpr std::chrono::milliseconds buffer_interval_{10};
   };
 
@@ -756,8 +806,8 @@ class EventBase : private boost::noncopyable,
   const bool enableTimeMeasurement_;
 
   // Wrap-around loop counter to detect beginning of each loop
-  uint64_t nextLoopCnt_;
-  uint64_t latestLoopCnt_;
+  std::size_t nextLoopCnt_;
+  std::size_t latestLoopCnt_;
   std::chrono::steady_clock::time_point startWork_;
   // Prevent undefined behavior from invoking event_base_loop() reentrantly.
   // This is needed since many projects use libevent-1.4, which lacks commit
@@ -780,8 +830,9 @@ class EventBase : private boost::noncopyable,
 
   // see EventBaseLocal
   friend class detail::EventBaseLocalBase;
-  template <typename T> friend class EventBaseLocal;
-  std::unordered_map<uint64_t, std::shared_ptr<void>> localStorage_;
+  template <typename T>
+  friend class EventBaseLocal;
+  std::unordered_map<std::size_t, std::shared_ptr<void>> localStorage_;
   std::unordered_set<detail::EventBaseLocalBaseBase*> localStorageToDtor_;
 
   folly::once_flag virtualEventBaseInitFlag_;
@@ -791,6 +842,11 @@ class EventBase : private boost::noncopyable,
 template <typename T>
 bool EventBase::runInEventBaseThread(void (*fn)(T*), T* arg) {
   return runInEventBaseThread([=] { fn(arg); });
+}
+
+template <typename T>
+bool EventBase::runInEventBaseThreadAlwaysEnqueue(void (*fn)(T*), T* arg) {
+  return runInEventBaseThreadAlwaysEnqueue([=] { fn(arg); });
 }
 
 template <typename T>

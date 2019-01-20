@@ -27,6 +27,9 @@
 #include <folly/Utility.h>
 #include <folly/detail/TypeList.h>
 #include <folly/functional/Invoke.h>
+#include <folly/lang/Exception.h>
+
+#include <folly/PolyException.h>
 
 namespace folly {
 /// \cond
@@ -243,9 +246,6 @@ using MembersOf = typename I::template Members<Uncvref<T>>;
 template <class I, class T>
 using InterfaceOf = typename I::template Interface<T>;
 
-[[noreturn]] void throwBadPolyAccess();
-[[noreturn]] void throwBadPolyCast();
-
 #if !defined(__cpp_template_auto)
 template <class T, T V>
 using Member = std::integral_constant<T, V>;
@@ -335,7 +335,9 @@ struct ArchetypeBase : Bottom {
   template <class T>
   /* implicit */ ArchetypeBase(T&&);
   template <std::size_t, class... As>
-  [[noreturn]] Bottom _polyCall_(As&&...) const { std::terminate(); }
+  [[noreturn]] Bottom _polyCall_(As&&...) const {
+    std::terminate();
+  }
 
   friend bool operator==(ArchetypeBase const&, ArchetypeBase const&);
   friend bool operator!=(ArchetypeBase const&, ArchetypeBase const&);
@@ -440,7 +442,7 @@ struct ThrowThunk {
   constexpr /* implicit */ operator FnPtr<R, Args...>() const noexcept {
     struct _ {
       static R call(Args...) {
-        throwBadPolyAccess();
+        throw_exception<BadPolyAccess>();
       }
     };
     return &_::call;
@@ -598,7 +600,7 @@ void* execOnHeap(Op op, Data* from, void* to) {
       if (*static_cast<std::type_info const*>(to) == typeid(T)) {
         return from->pobj_;
       }
-      throwBadPolyCast();
+      throw_exception<BadPolyCast>();
     case Op::eRefr:
       return vtableForRef<I, Uncvref<T>>(
           static_cast<RefType>(reinterpret_cast<std::uintptr_t>(to)));
@@ -629,7 +631,7 @@ void* execOnHeap(Op op, Data* from, void* to) {
       if (*static_cast<std::type_info const*>(to) == typeid(T)) {
         return from->pobj_;
       }
-      throwBadPolyCast();
+      throw_exception<BadPolyCast>();
     case Op::eRefr:
       return vtableForRef<I, Uncvref<T>>(
           static_cast<RefType>(reinterpret_cast<std::uintptr_t>(to)));
@@ -660,7 +662,7 @@ void* execInSitu(Op op, Data* from, void* to) {
       if (*static_cast<std::type_info const*>(to) == typeid(T)) {
         return &from->buff_;
       }
-      throwBadPolyCast();
+      throw_exception<BadPolyCast>();
     case Op::eRefr:
       return vtableForRef<I, Uncvref<T>>(
           static_cast<RefType>(reinterpret_cast<std::uintptr_t>(to)));
@@ -670,7 +672,7 @@ void* execInSitu(Op op, Data* from, void* to) {
 
 inline void* noopExec(Op op, Data*, void*) {
   if (op == Op::eAddr)
-    throwBadPolyAccess();
+    throw_exception<BadPolyAccess>();
   return const_cast<void*>(static_cast<void const*>(&typeid(void)));
 }
 

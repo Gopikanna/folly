@@ -26,7 +26,7 @@
 #include <folly/Portability.h>
 
 // libc++ doesn't provide this header, nor does msvc
-#ifdef FOLLY_HAVE_BITS_CXXCONFIG_H
+#if __has_include(<bits/c++config.h>)
 // This file appears in two locations: inside fbcode and in the
 // libstdc++ source code (when embedding fbstring as std::string).
 // To aid in this schizophrenic use, two macros are defined in
@@ -133,6 +133,21 @@
                    template test<TTheClass_>(nullptr))
 
 namespace folly {
+
+#if __cpp_lib_bool_constant || _MSC_VER
+
+using std::bool_constant;
+
+#else
+
+//  mimic: std::bool_constant, C++17
+template <bool B>
+using bool_constant = std::integral_constant<bool, B>;
+
+#endif
+
+template <std::size_t I>
+using index_constant = std::integral_constant<std::size_t, I>;
 
 /***
  *  _t
@@ -286,11 +301,14 @@ using type_t = typename traits_detail::type_t_<T, Ts...>::type;
 template <class... Ts>
 using void_t = type_t<void, Ts...>;
 
+template <typename T>
+using aligned_storage_for_t =
+    typename std::aligned_storage<sizeof(T), alignof(T)>::type;
+
 // Older versions of libstdc++ do not provide std::is_trivially_copyable
 #if defined(__clang__) && !defined(_LIBCPP_VERSION)
 template <class T>
-struct is_trivially_copyable
-    : std::integral_constant<bool, __is_trivially_copyable(T)> {};
+struct is_trivially_copyable : bool_constant<__is_trivially_copyable(T)> {};
 #elif defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 5
 template <class T>
 struct is_trivially_copyable : std::is_trivial<T> {};
@@ -365,7 +383,9 @@ struct Ignore {
   template <class T>
   constexpr /* implicit */ Ignore(const T&) {}
   template <class T>
-  const Ignore& operator=(T const&) const { return *this; }
+  const Ignore& operator=(T const&) const {
+    return *this;
+  }
 };
 
 template <class...>
@@ -378,8 +398,7 @@ template <class T, class U = T>
 struct IsEqualityComparable
     : std::is_convertible<
           decltype(std::declval<T>() == std::declval<U>()),
-          bool
-      > {};
+          bool> {};
 } // namespace traits_detail_IsEqualityComparable
 
 /* using override */ using traits_detail_IsEqualityComparable::
@@ -392,8 +411,7 @@ template <class T, class U = T>
 struct IsLessThanComparable
     : std::is_convertible<
           decltype(std::declval<T>() < std::declval<U>()),
-          bool
-      > {};
+          bool> {};
 } // namespace traits_detail_IsLessThanComparable
 
 /* using override */ using traits_detail_IsLessThanComparable::
@@ -417,10 +435,8 @@ using IsNothrowSwappable = std::_Is_nothrow_swappable<T>;
 
 template <class T>
 struct IsNothrowSwappable
-    : std::integral_constant<bool,
-        std::is_nothrow_move_constructible<T>::value &&
-        noexcept(swap(std::declval<T&>(), std::declval<T&>()))
-      > {};
+    : bool_constant<std::is_nothrow_move_constructible<T>::value&& noexcept(
+          swap(std::declval<T&>(), std::declval<T&>()))> {};
 #endif
 } // namespace traits_detail_IsNothrowSwappable
 
@@ -435,12 +451,12 @@ struct IsRelocatable : std::conditional<
                            // std::is_trivially_move_constructible<T>::value ||
                            is_trivially_copyable<T>>::type {};
 
-template <class T> struct IsZeroInitializable
-  : std::conditional<
-      traits_detail::has_IsZeroInitializable<T>::value,
-      traits_detail::has_true_IsZeroInitializable<T>,
-      std::integral_constant<bool, !std::is_class<T>::value>
-    >::type {};
+template <class T>
+struct IsZeroInitializable
+    : std::conditional<
+          traits_detail::has_IsZeroInitializable<T>::value,
+          traits_detail::has_true_IsZeroInitializable<T>,
+          bool_constant<!std::is_class<T>::value>>::type {};
 
 template <typename...>
 struct Conjunction : std::true_type {};
@@ -459,7 +475,7 @@ struct Disjunction<T, TList...>
     : std::conditional<T::value, T, Disjunction<TList...>>::type {};
 
 template <typename T>
-struct Negation : std::integral_constant<bool, !T::value> {};
+struct Negation : bool_constant<!T::value> {};
 
 template <bool... Bs>
 struct Bools {
@@ -476,9 +492,8 @@ struct StrictConjunction
 
 template <class... Ts>
 struct StrictDisjunction
-  : Negation<
-      std::is_same<Bools<Ts::value...>, Bools<(Ts::value && false)...>>
-    > {};
+    : Negation<
+          std::is_same<Bools<Ts::value...>, Bools<(Ts::value && false)...>>> {};
 
 } // namespace folly
 
@@ -563,30 +578,26 @@ struct StrictDisjunction
 FOLLY_NAMESPACE_STD_BEGIN
 
 template <class T, class U>
-  struct pair;
+struct pair;
 #ifndef _GLIBCXX_USE_FB
 FOLLY_GLIBCXX_NAMESPACE_CXX11_BEGIN
 template <class T, class R, class A>
-  class basic_string;
+class basic_string;
 FOLLY_GLIBCXX_NAMESPACE_CXX11_END
 #else
 template <class T, class R, class A, class S>
-  class basic_string;
+class basic_string;
 #endif
 template <class T, class A>
-  class vector;
+class vector;
 template <class T, class A>
-  class deque;
-FOLLY_GLIBCXX_NAMESPACE_CXX11_BEGIN
-template <class T, class A>
-  class list;
-FOLLY_GLIBCXX_NAMESPACE_CXX11_END
+class deque;
 template <class T, class C, class A>
-  class set;
+class set;
 template <class K, class V, class C, class A>
-  class map;
+class map;
 template <class T>
-  class shared_ptr;
+class shared_ptr;
 
 FOLLY_NAMESPACE_STD_END
 
@@ -594,10 +605,8 @@ namespace folly {
 
 // STL commonly-used types
 template <class T, class U>
-struct IsRelocatable< std::pair<T, U> >
-    : std::integral_constant<bool,
-        IsRelocatable<T>::value &&
-        IsRelocatable<U>::value> {};
+struct IsRelocatable<std::pair<T, U>>
+    : bool_constant<IsRelocatable<T>::value && IsRelocatable<U>::value> {};
 
 // Is T one of T1, T2, ..., Tn?
 template <typename T, typename... Ts>
@@ -617,12 +626,16 @@ namespace detail {
 
 template <typename T, bool>
 struct is_negative_impl {
-  constexpr static bool check(T x) { return x < 0; }
+  constexpr static bool check(T x) {
+    return x < 0;
+  }
 };
 
 template <typename T>
 struct is_negative_impl<T, false> {
-  constexpr static bool check(T) { return false; }
+  constexpr static bool check(T) {
+    return false;
+  }
 };
 
 // folly::to integral specializations can end up generating code
@@ -639,18 +652,22 @@ FOLLY_MSVC_DISABLE_WARNING(4804) // bool-compare
 
 template <typename RHS, RHS rhs, typename LHS>
 bool less_than_impl(LHS const lhs) {
+  // clang-format off
   return
-    rhs > std::numeric_limits<LHS>::max() ? true :
-    rhs <= std::numeric_limits<LHS>::min() ? false :
-    lhs < rhs;
+      rhs > std::numeric_limits<LHS>::max() ? true :
+      rhs <= std::numeric_limits<LHS>::min() ? false :
+      lhs < rhs;
+  // clang-format on
 }
 
 template <typename RHS, RHS rhs, typename LHS>
 bool greater_than_impl(LHS const lhs) {
+  // clang-format off
   return
-    rhs > std::numeric_limits<LHS>::max() ? false :
-    rhs < std::numeric_limits<LHS>::min() ? true :
-    lhs > rhs;
+      rhs > std::numeric_limits<LHS>::max() ? false :
+      rhs < std::numeric_limits<LHS>::min() ? true :
+      lhs > rhs;
+  // clang-format on
 }
 
 FOLLY_POP_WARNING
@@ -665,11 +682,15 @@ constexpr bool is_negative(T x) {
 
 // same as `x <= 0`
 template <typename T>
-constexpr bool is_non_positive(T x) { return !x || folly::is_negative(x); }
+constexpr bool is_non_positive(T x) {
+  return !x || folly::is_negative(x);
+}
 
 // same as `x > 0`
 template <typename T>
-constexpr bool is_positive(T x) { return !is_non_positive(x); }
+constexpr bool is_positive(T x) {
+  return !is_non_positive(x);
+}
 
 // same as `x >= 0`
 template <typename T>
@@ -679,16 +700,15 @@ constexpr bool is_non_negative(T x) {
 
 template <typename RHS, RHS rhs, typename LHS>
 bool less_than(LHS const lhs) {
-  return detail::less_than_impl<
-    RHS, rhs, typename std::remove_reference<LHS>::type
-  >(lhs);
+  return detail::
+      less_than_impl<RHS, rhs, typename std::remove_reference<LHS>::type>(lhs);
 }
 
 template <typename RHS, RHS rhs, typename LHS>
 bool greater_than(LHS const lhs) {
-  return detail::greater_than_impl<
-    RHS, rhs, typename std::remove_reference<LHS>::type
-  >(lhs);
+  return detail::
+      greater_than_impl<RHS, rhs, typename std::remove_reference<LHS>::type>(
+          lhs);
 }
 } // namespace folly
 
@@ -699,7 +719,6 @@ bool greater_than(LHS const lhs) {
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_3(std::basic_string)
 #endif
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::vector)
-FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::list)
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::deque)
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_2(std::unique_ptr)
 FOLLY_ASSUME_FBVECTOR_COMPATIBLE_1(std::shared_ptr)

@@ -17,8 +17,10 @@
 
 #include <experimental/coroutine>
 #include <future>
+#include <type_traits>
 
 #include <folly/Optional.h>
+#include <folly/experimental/coro/Traits.h>
 #include <folly/experimental/coro/Wait.h>
 #include <folly/futures/Future.h>
 
@@ -28,36 +30,33 @@ namespace coro {
 template <typename T>
 class AwaitableReady {
  public:
-  explicit AwaitableReady(T value) : value_(std::move(value)) {}
+  explicit AwaitableReady(T value) noexcept(
+      std::is_nothrow_move_constructible<T>::value)
+      : value_(static_cast<T&&>(value)) {}
 
-  bool await_ready() {
+  bool await_ready() noexcept {
     return true;
   }
 
-  bool await_suspend(std::experimental::coroutine_handle<>) {
-    return false;
-  }
+  void await_suspend(std::experimental::coroutine_handle<>) noexcept {}
 
-  T await_resume() {
-    return std::move(value_);
+  T await_resume() noexcept(std::is_nothrow_move_constructible<T>::value) {
+    return static_cast<T&&>(value_);
   }
 
  private:
   T value_;
 };
 
-struct getCurrentExecutor {};
-
-struct yield {
-  bool await_ready() {
-    return false;
+template <>
+class AwaitableReady<void> {
+ public:
+  AwaitableReady() noexcept = default;
+  bool await_ready() noexcept {
+    return true;
   }
-
-  void await_suspend(std::experimental::coroutine_handle<> ch) {
-    ch();
-  }
-
-  void await_resume() {}
+  void await_suspend(std::experimental::coroutine_handle<>) noexcept {}
+  void await_resume() noexcept {}
 };
 
 template <typename Awaitable>
@@ -66,8 +65,7 @@ class TimedWaitAwaitable {
   static_assert(
       std::is_same<Awaitable, std::decay_t<Awaitable>>::value,
       "Awaitable should be decayed.");
-  using await_resume_return_type =
-      decltype((operator co_await(std::declval<Awaitable>())).await_resume());
+  using await_resume_return_type = await_result_t<Awaitable>;
 
   TimedWaitAwaitable(Awaitable&& awaitable, std::chrono::milliseconds duration)
       : awaitable_(std::move(awaitable)), duration_(duration) {}
@@ -79,13 +77,18 @@ class TimedWaitAwaitable {
   bool await_suspend(std::experimental::coroutine_handle<> ch) {
     auto sharedState = std::make_shared<SharedState>(ch, storage_);
     waitAndNotify(std::move(awaitable_), sharedState).detach();
-    futures::sleep(duration_).then(
-        [sharedState = std::move(sharedState)] { sharedState->setTimeout(); });
+    futures::sleep(duration_).thenValue(
+        [sharedState = std::move(sharedState)](Unit) {
+          sharedState->setTimeout();
+        });
     return true;
   }
 
   Optional<await_resume_return_type> await_resume() {
-    return std::move(storage_);
+    if (!storage_.hasValue() && !storage_.hasException()) {
+      return folly::none;
+    }
+    return std::move(storage_).value();
   }
 
  private:
@@ -93,15 +96,24 @@ class TimedWaitAwaitable {
    public:
     SharedState(
         std::experimental::coroutine_handle<> ch,
-        Optional<await_resume_return_type>& storage)
+        Try<await_resume_return_type>& storage)
         : ch_(std::move(ch)), storage_(storage) {}
 
     void setValue(await_resume_return_type&& value) {
       if (first_.exchange(true, std::memory_order_relaxed)) {
         return;
       }
-      assume(!storage_);
-      storage_ = std::move(value);
+      assume(!storage_.hasValue() && !storage_.hasException());
+      tryEmplace(storage_, static_cast<await_resume_return_type&&>(value));
+      ch_();
+    }
+
+    void setException(exception_wrapper e) {
+      if (first_.exchange(true, std::memory_order_relaxed)) {
+        return;
+      }
+      assume(!storage_.hasValue() && !storage_.hasException());
+      storage_.emplaceException(std::move(e));
       ch_();
     }
 
@@ -115,18 +127,24 @@ class TimedWaitAwaitable {
    private:
     std::atomic<bool> first_{false};
     std::experimental::coroutine_handle<> ch_;
-    Optional<await_resume_return_type>& storage_;
+    Try<await_resume_return_type>& storage_;
   };
 
   static Wait waitAndNotify(
       Awaitable awaitable,
       std::shared_ptr<SharedState> sharedState) {
-    sharedState->setValue(co_await awaitable);
+    try {
+      sharedState->setValue(co_await std::forward<Awaitable>(awaitable));
+    } catch (const std::exception& e) {
+      sharedState->setException(exception_wrapper(std::current_exception(), e));
+    } catch (...) {
+      sharedState->setException(exception_wrapper(std::current_exception()));
+    }
   }
 
   Awaitable awaitable_;
   std::chrono::milliseconds duration_;
-  Optional<await_resume_return_type> storage_;
+  Try<await_resume_return_type> storage_;
 };
 
 template <typename Awaitable>

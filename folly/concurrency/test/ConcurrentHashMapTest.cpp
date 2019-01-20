@@ -25,7 +25,6 @@
 #include <folly/test/DeterministicSchedule.h>
 
 using namespace folly::test;
-using namespace folly::hazptr;
 using namespace folly;
 using namespace std;
 
@@ -50,6 +49,9 @@ TEST(ConcurrentHashMap, MapTest) {
   EXPECT_TRUE(foomap.insert(std::make_pair(2, 0)).second);
   EXPECT_TRUE(foomap.insert_or_assign(2, 0).second);
   EXPECT_TRUE(foomap.assign_if_equal(2, 0, 3));
+  EXPECT_TRUE(foomap.insert(3, 0).second);
+  EXPECT_FALSE(foomap.erase_if_equal(3, 1));
+  EXPECT_TRUE(foomap.erase_if_equal(3, 0));
   EXPECT_TRUE(foomap.insert(3, 0).second);
   EXPECT_NE(foomap.find(1), foomap.cend());
   EXPECT_NE(foomap.find(2), foomap.cend());
@@ -234,15 +236,15 @@ TEST(ConcurrentHashMap, MapIterateTest) {
   EXPECT_NE(iter, foomap.cend());
   EXPECT_EQ(iter->first, 1);
   EXPECT_EQ(iter->second, 1);
-  iter++;
+  ++iter;
   EXPECT_NE(iter, foomap.cend());
   EXPECT_EQ(iter->first, 2);
   EXPECT_EQ(iter->second, 2);
-  iter++;
+  ++iter;
   EXPECT_EQ(iter, foomap.cend());
 
   int count = 0;
-  for (auto it = foomap.cbegin(); it != foomap.cend(); it++) {
+  for (auto it = foomap.cbegin(); it != foomap.cend(); ++it) {
     count++;
   }
   EXPECT_EQ(count, 2);
@@ -269,11 +271,20 @@ TEST(ConcurrentHashMap, EraseTest) {
   foomap.erase(f1);
 }
 
+TEST(ConcurrentHashMap, EraseIfEqualTest) {
+  ConcurrentHashMap<uint64_t, uint64_t> foomap(3);
+  foomap.insert(1, 0);
+  EXPECT_FALSE(foomap.erase_if_equal(1, 1));
+  auto f1 = foomap.find(1);
+  EXPECT_EQ(0, f1->second);
+  EXPECT_TRUE(foomap.erase_if_equal(1, 0));
+  EXPECT_EQ(foomap.find(1), foomap.cend());
+}
+
 TEST(ConcurrentHashMap, CopyIterator) {
   ConcurrentHashMap<int, int> map;
   map.insert(0, 0);
-  auto const cbegin = map.cbegin();
-  for (auto cit = cbegin; cit != map.cend(); ++cit) {
+  for (auto cit = map.cbegin(); cit != map.cend(); ++cit) {
     std::pair<int const, int> const ckv{0, 0};
     EXPECT_EQ(*cit, ckv);
   }
@@ -338,14 +349,18 @@ TEST(ConcurrentHashMap, UpdateStressTest) {
         unsigned long k = folly::hash::jenkins_rev_mix32((i + offset));
         k = k % (iters / num_threads) + offset;
         unsigned long val = 3;
-        auto res = m.find(k);
-        EXPECT_NE(res, m.cend());
-        EXPECT_EQ(k, res->second);
-        auto r = m.assign(k, res->second);
-        EXPECT_TRUE(r);
-        res = m.find(k);
-        EXPECT_NE(res, m.cend());
-        EXPECT_EQ(k, res->second);
+        {
+          auto res = m.find(k);
+          EXPECT_NE(res, m.cend());
+          EXPECT_EQ(k, res->second);
+          auto r = m.assign(k, res->second);
+          EXPECT_TRUE(r);
+        }
+        {
+          auto res = m.find(k);
+          EXPECT_NE(res, m.cend());
+          EXPECT_EQ(k, res->second);
+        }
         // Another random insertion to force table resizes
         val = size + i + offset;
         EXPECT_TRUE(m.insert(val, val).second);
@@ -386,7 +401,11 @@ TEST(ConcurrentHashMap, EraseStressTest) {
         unsigned long k = folly::hash::jenkins_rev_mix32((i + offset));
         auto res = m.insert(k, k).second;
         if (res) {
-          res = m.erase(k);
+          if (i % 2 == 0) {
+            res = m.erase(k);
+          } else {
+            res = m.erase_if_equal(k, k);
+          }
           if (!res) {
             printf("Faulre to erase thread %i val %li\n", t, k);
             exit(0);
@@ -448,7 +467,11 @@ TEST(ConcurrentHashMap, IterateStressTest) {
         unsigned long k = folly::hash::jenkins_rev_mix32((i + offset));
         auto res = m.insert(k, k).second;
         if (res) {
-          res = m.erase(k);
+          if (i % 2 == 0) {
+            res = m.erase(k);
+          } else {
+            res = m.erase_if_equal(k, k);
+          }
           if (!res) {
             printf("Faulre to erase thread %i val %li\n", t, k);
             exit(0);
@@ -456,7 +479,7 @@ TEST(ConcurrentHashMap, IterateStressTest) {
           EXPECT_TRUE(res);
         }
         int count = 0;
-        for (auto it = m.cbegin(); it != m.cend(); it++) {
+        for (auto it = m.cbegin(); it != m.cend(); ++it) {
           printf("Item is %li\n", it->first);
           if (it->first < 10) {
             count++;
@@ -610,6 +633,8 @@ TEST(ConcurrentHashMap, Deletion) {
     map.insert(0, std::make_shared<Wrapper>(del));
   }
 
+  folly::hazptr_cleanup();
+
   EXPECT_TRUE(del);
 }
 
@@ -623,7 +648,7 @@ TEST(ConcurrentHashMap, DeletionWithErase) {
     map.erase(0);
   }
 
-  hazptr_cleanup();
+  folly::hazptr_cleanup();
 
   EXPECT_TRUE(del);
 }
@@ -639,7 +664,7 @@ TEST(ConcurrentHashMap, DeletionWithIterator) {
     map.erase(it);
   }
 
-  hazptr_cleanup();
+  folly::hazptr_cleanup();
 
   EXPECT_TRUE(del);
 }
@@ -656,6 +681,8 @@ TEST(ConcurrentHashMap, DeletionWithForLoop) {
     }
   }
 
+  folly::hazptr_cleanup();
+
   EXPECT_TRUE(del);
 }
 
@@ -668,6 +695,8 @@ TEST(ConcurrentHashMap, DeletionMultiple) {
     map.insert(0, std::make_shared<Wrapper>(del1));
     map.insert(1, std::make_shared<Wrapper>(del2));
   }
+
+  folly::hazptr_cleanup();
 
   EXPECT_TRUE(del1);
   EXPECT_TRUE(del2);
@@ -683,7 +712,7 @@ TEST(ConcurrentHashMap, DeletionAssigned) {
     map.insert_or_assign(0, std::make_shared<Wrapper>(del2));
   }
 
-  hazptr_cleanup();
+  folly::hazptr_cleanup();
 
   EXPECT_TRUE(del1);
   EXPECT_TRUE(del2);
@@ -700,7 +729,7 @@ TEST(ConcurrentHashMap, DeletionMultipleMaps) {
     map2.insert(0, std::make_shared<Wrapper>(del2));
   }
 
-  hazptr_cleanup();
+  folly::hazptr_cleanup();
 
   EXPECT_TRUE(del1);
   EXPECT_TRUE(del2);
@@ -716,4 +745,24 @@ TEST(ConcurrentHashMap, ForEachLoop) {
     ++iters;
   }
   EXPECT_EQ(iters, 1);
+}
+
+TEST(ConcurrentHashMap, IteratorMove) {
+  using CHM = ConcurrentHashMap<int, int>;
+  using Iter = CHM::ConstIterator;
+  struct Foo {
+    Iter it;
+    explicit Foo(Iter&& it_) : it(std::move(it_)) {}
+    Foo(Foo&&) = default;
+    Foo& operator=(Foo&&) = default;
+  };
+  CHM map;
+  int k = 111;
+  int v = 999999;
+  map.insert(k, v);
+  Foo foo(map.find(k));
+  ASSERT_EQ(foo.it->second, v);
+  Foo foo2(map.find(0));
+  foo2 = std::move(foo);
+  ASSERT_EQ(foo2.it->second, v);
 }

@@ -154,7 +154,7 @@ TEST(FutureSplitter, splitFutureScope) {
   p.setValue(1);
   EXPECT_TRUE(f1.isReady());
   EXPECT_TRUE(f1.hasValue());
-  EXPECT_EQ(1, f1.get());
+  EXPECT_EQ(1, std::move(f1).get());
 }
 
 TEST(FutureSplitter, splitFutureFailure) {
@@ -173,4 +173,20 @@ TEST(FutureSplitter, splitFutureFailure) {
   auto f2 = sp.getFuture();
   EXPECT_TRUE(f2.isReady());
   EXPECT_TRUE(f2.hasException());
+}
+
+TEST(FutureSplitter, splitFuturePriority) {
+  std::vector<int8_t> priorities = {
+      folly::Executor::LO_PRI,
+      folly::Executor::MID_PRI,
+      folly::Executor::HI_PRI,
+  };
+
+  for (const auto priority : priorities) {
+    Promise<int> p;
+    folly::FutureSplitter<int> sp(
+        p.getSemiFuture().via(&InlineExecutor::instance(), priority));
+    auto fut = sp.getFuture();
+    EXPECT_EQ(priority, fut.getPriority());
+  }
 }

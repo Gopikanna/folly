@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <ostream>
@@ -47,8 +48,8 @@ std::ostream& operator<<(std::ostream& xo, Histo const& histo) {
     }
     partial += histo.data[i];
     if (histo.data[i] > 0) {
-      xo << i << ": " << histo.data[i] << " (" << (partial * 100.0 / sum)
-         << "%)";
+      xo << i << ": " << histo.data[i] << " ("
+         << (static_cast<double>(partial) * 100.0 / sum) << "%)";
     }
   }
   xo << "]";
@@ -73,7 +74,7 @@ double expectedProbe(std::vector<std::size_t> const& probeLengths) {
     sum += i * probeLengths[i];
     count += probeLengths[i];
   }
-  return static_cast<double>(sum) / count;
+  return static_cast<double>(sum) / static_cast<double>(count);
 }
 
 // Returns i such that probeLengths elements 0 to i (inclusive) account
@@ -279,7 +280,7 @@ struct Tracked {
 
 template <int Tag>
 struct TransparentTrackedHash {
-  using is_transparent = std::true_type;
+  using is_transparent = void;
 
   size_t operator()(Tracked<Tag> const& tracked) const {
     return tracked.val_ ^ Tag;
@@ -291,7 +292,7 @@ struct TransparentTrackedHash {
 
 template <int Tag>
 struct TransparentTrackedEqual {
-  using is_transparent = std::true_type;
+  using is_transparent = void;
 
   uint64_t unwrap(Tracked<Tag> const& v) const {
     return v.val_;
@@ -394,12 +395,21 @@ class SwapTrackingAlloc {
     ++testAllocationCount;
     testAllocatedMemorySize += n * sizeof(T);
     ++testAllocatedBlockCount;
-    return a_.allocate(n);
+    std::size_t extra =
+        std::max<std::size_t>(1, sizeof(std::size_t) / sizeof(T));
+    T* p = a_.allocate(extra + n);
+    std::memcpy(p, &n, sizeof(std::size_t));
+    return p + extra;
   }
   void deallocate(T* p, size_t n) {
     testAllocatedMemorySize -= n * sizeof(T);
     --testAllocatedBlockCount;
-    a_.deallocate(p, n);
+    std::size_t extra =
+        std::max<std::size_t>(1, sizeof(std::size_t) / sizeof(T));
+    std::size_t check;
+    std::memcpy(&check, p - extra, sizeof(std::size_t));
+    FOLLY_SAFE_CHECK(check == n, "");
+    a_.deallocate(p - extra, n + extra);
   }
 
  private:
@@ -432,7 +442,13 @@ std::ostream& operator<<(std::ostream& xo, F14TableStats const& stats) {
   using f14::Histo;
 
   xo << "{ " << std::endl;
-  xo << "  policy: " << folly::demangle(stats.policy) << std::endl;
+  xo << "  policy: "
+#if FOLLY_HAS_RTTI
+     << folly::demangle(stats.policy)
+#else
+     << "unknown (RTTI not availabe)"
+#endif
+     << std::endl;
   xo << "  size: " << stats.size << std::endl;
   xo << "  valueSize: " << stats.valueSize << std::endl;
   xo << "  bucketCount: " << stats.bucketCount << std::endl;
@@ -451,7 +467,9 @@ std::ostream& operator<<(std::ostream& xo, F14TableStats const& stats) {
   xo << "  valueBytes: " << (stats.size * stats.valueSize) << std::endl;
   xo << "  overheadBytes: " << stats.overheadBytes << std::endl;
   if (stats.size > 0) {
-    xo << "  overheadBytesPerKey: " << (stats.overheadBytes * 1.0 / stats.size)
+    xo << "  overheadBytesPerKey: "
+       << (static_cast<double>(stats.overheadBytes) /
+           static_cast<double>(stats.size))
        << std::endl;
   }
   xo << "}";
